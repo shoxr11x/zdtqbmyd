@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vision · счёт деталей на воротах</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#151c26; --panel2:#1c2531; --line:#28323f;
+    --text:#e8eef5; --muted:#8b9bb0; --accent:#3ea6ff; --ok:#37d67a; --warn:#ffb020; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text)}
+
+  header{
+    display:flex;align-items:center;gap:14px;padding:14px 22px;
+    border-bottom:1px solid var(--line);background:linear-gradient(180deg,#18222f,#0d1117);
+    position:sticky;top:0;z-index:10;
+  }
+  header h1{font-size:17px;margin:0;font-weight:650}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--bad);box-shadow:0 0 10px var(--bad);flex:none}
+  .dot.on{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+  .badges{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .badge{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 11px;font-size:12px;color:var(--muted)}
+  .badge b{color:var(--text)}
+
+  .wrap{display:grid;grid-template-columns:1fr 400px;gap:18px;padding:18px;max-width:1500px;margin:0 auto;align-items:start}
+  @media(max-width:1050px){.wrap{grid-template-columns:1fr}}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);margin:0 0 13px;font-weight:600}
+
+  #stage{position:relative;background:#000;border-radius:11px;overflow:hidden;aspect-ratio:16/9;
+         display:flex;align-items:center;justify-content:center}
+  #stage img{width:100%;height:100%;object-fit:contain;display:none}
+  #ph{color:var(--muted);text-align:center;padding:30px;font-size:15px;line-height:1.7}
+
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  button{padding:10px 16px;border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;
+         background:var(--panel2);color:var(--text);border:1px solid var(--line);transition:.15s}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:#04121f;border-color:var(--accent)}
+  button.danger{border-color:#4a2530;color:#ff9a9a}
+  button:disabled{opacity:.4;cursor:not-allowed}
+
+  label.f{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
+  input[type=text],input[type=number],select{width:100%;padding:9px 11px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:9px;color:var(--text);font-size:13px}
+  .slider{display:flex;align-items:center;gap:10px;margin-top:11px}
+  .slider span{font-size:12px;color:var(--muted);min-width:74px}
+  .slider input{flex:1}
+  .slider b{min-width:44px;text-align:right;color:var(--accent);font-size:13px}
+  .seg{display:flex;gap:6px;margin-top:8px}
+  .seg button{flex:1;padding:8px;font-size:13px}
+  .seg button.act{background:var(--accent);color:#04121f;border-color:var(--accent)}
+
+  /* Итоги */
+  .totals{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .tot{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:center}
+  .tot .n{font-size:36px;font-weight:800;line-height:1}
+  .tot .c{font-size:12px;color:var(--muted);margin-top:6px}
+  .tot.in .n{color:var(--ok)} .tot.out .n{color:var(--warn)}
+
+  table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
+  th{text-align:left;color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;
+     letter-spacing:.5px;padding:6px 8px;border-bottom:1px solid var(--line)}
+  td{padding:8px;border-bottom:1px solid #1e2732}
+  td.num{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:0}
+
+  .chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:4px}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:5px 12px;font-size:12px}
+  .chip b{color:var(--accent)}
+
+  .log{max-height:210px;overflow-y:auto;font-size:12.5px;margin-top:4px}
+  .ev{display:flex;gap:9px;align-items:center;padding:6px 8px;border-bottom:1px solid #1e2732}
+  .ev .t{color:var(--muted);font-variant-numeric:tabular-nums}
+  .ev .a{font-weight:700;width:18px;text-align:center}
+  .ev .a.in{color:var(--ok)} .ev .a.out{color:var(--warn)}
+  .ev .i{margin-left:auto;color:var(--muted)}
+
+  .hint{font-size:12px;color:var(--muted);background:var(--panel2);border:1px solid var(--line);
+        border-radius:9px;padding:10px 12px;margin-top:12px;line-height:1.65}
+  .err{background:#2a1720;border-color:#4a2530;color:#ff9a9a}
+  .warn{background:#2a2113;border-color:#4a3a1a;color:#ffcf7a}
+  .good{background:#12261c;border-color:#1e4630;color:#8ce8ae}
+  .empty{color:var(--muted);font-size:13px;padding:10px 2px}
+
+  /* Датасет и обучение */
+  .big{width:100%;padding:13px;font-size:15px}
+  .narrow{max-width:120px}
+  .bar{height:9px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:12px}
+  .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .4s}
+  .barlab{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:7px}
+  .barlab b{color:var(--text);font-variant-numeric:tabular-nums}
+  .plog{max-height:170px;overflow-y:auto;margin-top:10px;padding:9px 11px;background:#0b1017;
+        border:1px solid var(--line);border-radius:9px;font-family:Consolas,ui-monospace,monospace;
+        font-size:11.5px;line-height:1.6;color:var(--muted);white-space:pre-wrap;word-break:break-word}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot" id="dot"></div>
+  <h1>🏭 Vision · счёт деталей на воротах</h1>
+  <div class="badges">
+    <div class="badge">видео <b id="bFps">—</b></div>
+    <div class="badge">YOLO <b id="bFpsD">—</b></div>
+    <div class="badge" id="bDev">—</div>
+    <div class="badge">модель <b id="bModel">—</b></div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ЛЕВО -->
+  <div>
+    <div class="card">
+      <h2>Видео · рамки, ID и «ворота»</h2>
+      <div id="stage">
+        <img id="video" alt="поток">
+        <div id="ph">📷 Нажми «Запустить» — YOLO начнёт находить объекты,<br>
+          вести каждый по ID и считать пересечения жёлтой линии.</div>
+      </div>
+      <div class="row">
+        <button class="primary" id="bStart">▶ Запустить</button>
+        <button id="bStop" disabled>⏸ Остановить</button>
+        <button class="danger" id="bReset">🔄 Сбросить счёт</button>
+      </div>
+      <div class="hint" id="hint">
+        <b>Жёлтая линия — это «ворота».</b> Каждый объект получает свой номер (ID) и ведётся между кадрами.
+        Когда центр объекта переходит линию — счётчик прибавляется, и только один раз: тот же предмет,
+        болтающийся у линии, второй раз не посчитается. Это и есть логика конвейера.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Итог по воротам</h2>
+      <div class="totals">
+        <div class="tot in"><div class="n" id="tIn">0</div><div class="c">прошло вперёд →</div></div>
+        <div class="tot out"><div class="n" id="tOut">0</div><div class="c">← прошло назад</div></div>
+      </div>
+      <table>
+        <thead><tr><th>Класс</th><th style="text-align:right">→ вперёд</th><th style="text-align:right">← назад</th></tr></thead>
+        <tbody id="tbl"><tr><td colspan="3" class="empty">Пока пусто</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Датасет · свои детали</h2>
+      <table>
+        <thead><tr><th>Класс</th><th style="text-align:right">кадров</th><th style="text-align:right">размечено</th></tr></thead>
+        <tbody id="dsTbl"><tr><td colspan="3" class="empty">Загружаю…</td></tr></tbody>
+      </table>
+      <div class="row">
+        <button class="primary big" id="bLabel">✏ Разметить →</button>
+      </div>
+      <div class="hint" id="dsHint">
+        Снимай кадры деталей с телефона, потом обведи их рамками на странице разметки —
+        и собери из этого датасет для обучения.
+      </div>
+      <label class="f">Доля кадров, откладываемых на проверку — от 0.05 до 0.5 (остальные идут на обучение)</label>
+      <div class="row">
+        <input type="number" id="valRatio" class="narrow" min="0.05" max="0.5" step="0.05" value="0.2"
+               title="Доля кадров, откладываемых на проверку: 0.2 — каждый пятый кадр">
+        <button id="bExport">📦 Собрать датасет</button>
+        <button id="bDsRefresh" title="Обновить список">⟳</button>
+      </div>
+      <div class="hint" id="dsExport" style="display:none"></div>
+    </div>
+
+    <div class="card">
+      <h2>Обучение своей модели</h2>
+      <div class="hint warn">
+        ⚠ На время обучения <b>камера останавливается</b>: видеокарта целиком занята тренировкой.
+        Считать детали в это время не получится — запускай обучение, когда цех не работает.
+      </div>
+      <label class="f">На чём будет учиться — состав собранного датасета</label>
+      <table>
+        <thead><tr><th>Класс</th><th style="text-align:right">обучающих</th><th style="text-align:right">проверочных</th></tr></thead>
+        <tbody id="trDsTbl"><tr><td colspan="3" class="empty">Загружаю…</td></tr></tbody>
+      </table>
+      <div class="hint">
+        Модель <b>одна на все детали сразу</b> — она учится отличать их друг от друга,
+        а не по отдельной модели на каждую деталь. Поэтому в обучение идут <b>все классы из списка выше</b>,
+        а не только тот, который нужен прямо сейчас.
+      </div>
+      <div class="hint" id="trDsState">Смотрю, что собрано…</div>
+      <div class="hint" id="trDsMissing" style="display:none"></div>
+      <label class="f">Базовая модель (с неё начинаем учиться)</label>
+      <select id="trBase">
+        <option value="yolo11n.pt" selected>yolo11n.pt — лёгкая, для датасетов до ~300 кадров</option>
+        <option value="yolo11s.pt">yolo11s.pt — средняя, от ~300 кадров</option>
+        <option value="yolo11m.pt">yolo11m.pt — тяжёлая, от ~1000 кадров</option>
+      </select>
+      <div class="hint" id="trBaseHint"></div>
+      <label class="f">Сколько эпох (проходов по всем кадрам)</label>
+      <input type="number" id="trEpochs" min="10" max="1000" step="10" value="80">
+      <label class="f">Имя будущей модели (латиницей, без пробелов)</label>
+      <input type="text" id="trName" value="parts" placeholder="parts">
+      <div class="row">
+        <button class="primary" id="bTrain">🚀 Обучить</button>
+        <button class="danger" id="bTrainStop" disabled>■ Остановить</button>
+      </div>
+      <div id="trBox" style="display:none">
+        <div class="bar"><i id="trBar"></i></div>
+        <div class="barlab"><span id="trEp">эпоха — из —</span><span id="trPct">0%</span></div>
+        <div class="chips" id="trMetrics"></div>
+        <div class="plog" id="trLog"></div>
+      </div>
+      <div class="hint" id="trHint">
+        Обучение идёт долго — от десятков минут до нескольких часов. Страницу можно закрыть,
+        обучение не прервётся; вернёшься — увидишь тот же прогресс.
+      </div>
+    </div>
+  </div>
+
+  <!-- ПРАВО -->
+  <div>
+    <div class="card">
+      <h2>Источник и модель</h2>
+      <div class="seg">
+        <button id="srcCam" class="act">💻 Веб-камера</button>
+        <button id="srcPhone">📱 Телефон</button>
+      </div>
+      <label class="f">Камера (0 = встроенная), <code>phone</code> или ссылка RTSP</label>
+      <input type="text" id="src" value="0" placeholder="0  ·  phone  ·  rtsp://user:pass@192.168.1.50:554/stream">
+      <div class="hint" id="phoneHint" style="display:none">
+        Набери на телефоне <b id="phoneUrl">vision.local/phone</b> и нажми там «Включить камеру».
+        Сервис переключится на телефон сам. <span id="phoneState" style="color:var(--muted)">телефон не подключён</span>
+      </div>
+      <!-- для телефона зеркало прячем: сервер зеркалит кадр до детекции,
+           а телефон рисует рамки поверх своего незеркального видео — всё уезжает вбок -->
+      <div id="mirrorBox">
+        <div class="seg">
+          <button id="mirOn" class="act">🪞 зеркало</button>
+          <button id="mirOff">↔ как видит камера</button>
+        </div>
+        <div class="hint">
+          Веб-камера отдаёт картинку не зеркаленной: двигаешь предмет вправо — на экране он идёт влево.
+          <b>Зеркало</b> это исправляет. Для камеры на конвейере зеркало нужно <b>выключить</b> —
+          там важно настоящее направление движения.
+        </div>
+      </div>
+      <label class="f">Модель</label>
+      <select id="model"></select>
+      <div class="hint">
+        <b>yolo11n</b> — самая лёгкая и быстрая (nano), <b>s</b> и <b>m</b> — точнее, но тяжелее.
+        Своя обученная модель появится здесь после тренировки.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Настройка ворот</h2>
+      <div class="slider">
+        <span>Уверенность</span><input type="range" id="conf" min="10" max="90" value="45"><b id="confV">45%</b>
+      </div>
+      <div class="slider">
+        <span>Линия</span><input type="range" id="pos" min="5" max="95" value="50"><b id="posV">50%</b>
+      </div>
+      <div class="seg">
+        <button id="orV" class="act">│ вертикальная</button>
+        <button id="orH">─ горизонтальная</button>
+      </div>
+      <label class="f">Считать только эти классы (через запятую, пусто = все)</label>
+      <input type="text" id="only" placeholder="например: телефон, кружка, книга">
+      <div class="hint">
+        Ставь линию поперёк движения. На заводе это будет сечение конвейера — «ворота» перед мойкой,
+        сушкой, покраской.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Цвет детали</h2>
+      <label class="f">Какой цвет ждём по заданию</label>
+      <select id="expColor">
+        <option value="">не сверять — просто показывать</option>
+        <option>красный</option><option>оранжевый</option><option>жёлтый</option>
+        <option>салатовый</option><option>зелёный</option><option>бирюзовый</option>
+        <option>синий</option><option>фиолетовый</option><option>малиновый</option>
+        <option>серый</option><option>белый</option><option>чёрный</option>
+      </select>
+      <div class="chips" id="colorChips" style="margin-top:12px"><div class="empty">—</div></div>
+      <div class="hint" id="colorHint">
+        Цвет считается по тону внутри рамки — нейросеть тут не нужна. Замер берётся
+        с середины рамки: по краям попадает фон и крюк. Если задан ожидаемый цвет,
+        каждое расхождение попадает в журнал и в счётчик тревог.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>В кадре сейчас</h2>
+      <div class="chips" id="live"><div class="empty">—</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Журнал пересечений</h2>
+      <div class="log" id="log"><div class="empty">Событий пока нет</div></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let running = false, orient = 'v', mirror = true;
+let trainBusy = false;   // идёт ли сейчас обучение — тогда камеру запускать нельзя
+
+// ── управление ────────────────────────────────────────────────────────────
+async function post(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                             body: body ? JSON.stringify(body) : null});
+  return r.json();
+}
+const cfg = patch => post('/config', patch);
+
+$('bStart').onclick = async () => {
+  await cfg({source:$('src').value, conf:$('conf').value/100, mirror:mirror,
+             line_pos:$('pos').value/100, line_orient:orient, only:$('only').value});
+  $('bStart').disabled = true;
+  await post('/start');
+  $('video').src = '/stream?' + Date.now();
+  $('video').style.display = 'block';
+  $('ph').style.display = 'none';
+  $('bStop').disabled = false;
+  running = true;
+};
+
+$('bStop').onclick = async () => {
+  await post('/stop');
+  $('video').src = ''; $('video').style.display='none'; $('ph').style.display='block';
+  $('bStart').disabled = false; $('bStop').disabled = true; running = false;
+};
+
+$('bReset').onclick = () => post('/reset');
+
+$('conf').oninput = e => { $('confV').textContent = e.target.value+'%'; cfg({conf:e.target.value/100}); };
+$('pos').oninput  = e => { $('posV').textContent  = e.target.value+'%'; cfg({line_pos:e.target.value/100}); };
+$('orV').onclick  = () => setOrient('v');
+$('orH').onclick  = () => setOrient('h');
+$('mirOn').onclick  = () => setMirror(true);
+$('mirOff').onclick = () => setMirror(false);
+$('expColor').onchange = () => cfg({expect_color: $('expColor').value});
+$('srcCam').onclick   = () => setSource('0');
+$('srcPhone').onclick = () => setSource('phone');
+// quiet = раскладываем то, что уже стоит на сервере, — обратно слать нечего
+function setSource(v, quiet){
+  $('src').value = v;
+  const isPhone = (v === 'phone');
+  $('srcCam').classList.toggle('act', !isPhone);
+  $('srcPhone').classList.toggle('act', isPhone);
+  $('phoneHint').style.display = isPhone ? 'block' : 'none';
+  // зеркало у телефона только ломает рамки: сервер зеркалит кадр до детекции,
+  // а рамки телефон рисует поверх своего, незеркального видео
+  $('mirrorBox').style.display = isPhone ? 'none' : 'block';
+  if(!quiet) cfg({source:v});
+}
+function setMirror(v, quiet){
+  mirror = v;
+  $('mirOn').classList.toggle('act', v);
+  $('mirOff').classList.toggle('act', !v);
+  if(!quiet) cfg({mirror:v});
+}
+function setOrient(o, quiet){
+  orient = o;
+  $('orV').classList.toggle('act', o==='v');
+  $('orH').classList.toggle('act', o==='h');
+  if(!quiet) cfg({line_orient:o});
+}
+// ── состояние сервера при загрузке страницы ───────────────────────────────
+// Панель могли перезагрузить, пока сервис уже работает — скажем, стримит телефон.
+// Тогда в поле источника снова стоит «0», и первый же «Запустить» перебил бы
+// живой источник на веб-камеру. Поэтому при первом ответе /stats раскладываем
+// состояние сервера по контролам — ровно один раз, чтобы дальше не перебивать
+// то, что человек крутит прямо сейчас.
+let stateLoaded = false;
+function applyServerState(s){
+  if(typeof s.source === 'string')   setSource(s.source, true);
+  if(typeof s.mirror === 'boolean')  setMirror(s.mirror, true);
+  if(s.line_orient === 'v' || s.line_orient === 'h') setOrient(s.line_orient, true);
+  if(typeof s.conf === 'number'){
+    $('conf').value = Math.round(s.conf * 100);
+    $('confV').textContent = $('conf').value + '%';
+  }
+  if(typeof s.line_pos === 'number'){
+    $('pos').value = Math.round(s.line_pos * 100);
+    $('posV').textContent = $('pos').value + '%';
+  }
+  if(Array.isArray(s.only)) $('only').value = s.only.join(', ');
+  if(typeof s.expect_color === 'string') $('expColor').value = s.expect_color;
+  // сервис уже считает — показываем поток, а не заглушку
+  if(s.running && !running){
+    $('video').src = '/stream?' + Date.now();
+    $('video').style.display = 'block';
+    $('ph').style.display = 'none';
+    $('bStart').disabled = true;
+    $('bStop').disabled = false;
+    running = true;
+  }
+}
+
+let onlyTimer;
+$('only').oninput = () => { clearTimeout(onlyTimer); onlyTimer = setTimeout(()=>cfg({only:$('only').value}), 500); };
+$('model').onchange = () => cfg({model:$('model').value});
+
+// подставляем реальный адрес компьютера в подсказку для телефона
+fetch('/lan').then(r=>r.json()).then(d=>{
+  $('phoneUrl').innerHTML = `${d.host}:${d.port_tls}/phone</b> <span style="color:var(--muted)">`
+    + `(если не откроется — ${d.ip}:${d.port_tls}/phone)</span><b>`;
+}).catch(()=>{});
+
+// ── список моделей ────────────────────────────────────────────────────────
+function loadModels(){
+  return fetch('/models').then(r=>r.json()).then(m=>{
+    const sel = $('model'); sel.innerHTML='';
+    if(m.own.length){
+      const g = document.createElement('optgroup'); g.label='Свои обученные';
+      m.own.forEach(n=>g.appendChild(new Option(n,n))); sel.appendChild(g);
+    }
+    const g2 = document.createElement('optgroup'); g2.label='Готовые (80 бытовых предметов)';
+    m.builtin.forEach(n=>g2.appendChild(new Option(n,n))); sel.appendChild(g2);
+    sel.value = m.current;
+  }).catch(()=>{});
+}
+loadModels();
+
+// ── опрос статистики ──────────────────────────────────────────────────────
+async function tick(){
+  try{
+    const s = await (await fetch('/stats')).json();
+
+    if(!stateLoaded){ stateLoaded = true; applyServerState(s); }
+
+    $('dot').classList.toggle('on', s.running);
+    $('bFps').textContent  = s.running ? s.fps + ' к/с' : '—';
+    $('bFpsD').textContent = s.running ? s.fps_detect + '/с' : '—';
+    $('bDev').innerHTML = s.device.includes('GPU')
+        ? '⚡ <b style="color:var(--ok)">'+s.device+'</b>' : '🐌 <b>'+s.device+'</b>';
+    $('bModel').textContent = s.model;
+
+    if(s.source === 'phone'){
+      $('phoneState').innerHTML = s.phone
+        ? '<b style="color:var(--ok)">телефон подключён ✓</b>'
+        : 'телефон не подключён';
+    }
+
+    $('tIn').textContent = s.total_in;
+    $('tOut').textContent = s.total_out;
+
+    // таблица по классам
+    const rows = Object.entries(s.counts);
+    $('tbl').innerHTML = rows.length
+      ? rows.sort((a,b)=>(b[1].in+b[1].out)-(a[1].in+a[1].out))
+            .map(([k,v])=>`<tr><td>${k}</td><td class="num" style="color:var(--ok)">${v.in}</td>
+                           <td class="num" style="color:var(--warn)">${v.out}</td></tr>`).join('')
+      : '<tr><td colspan="3" class="empty">Пока пусто</td></tr>';
+
+    // в кадре сейчас
+    const live = Object.entries(s.live);
+    $('live').innerHTML = live.length
+      ? live.map(([k,v])=>`<div class="chip">${k} <b>${v}</b></div>`).join('')
+      : '<div class="empty">—</div>';
+
+    // сколько какого цвета прошло через ворота
+    const cols = Object.entries(s.colors || {}).sort((a,b)=>b[1]-a[1]);
+    $('colorChips').innerHTML = cols.length
+      ? cols.map(([k,v])=>`<div class="chip">${k} <b>${v}</b></div>`).join('')
+        + (s.color_alarms ? `<div class="chip" style="border-color:#4a2530;color:#ff9a9a">`
+            + `не тот цвет <b style="color:#ff9a9a">${s.color_alarms}</b></div>` : '')
+      : '<div class="empty">пока ничего не прошло</div>';
+
+    // журнал
+    $('log').innerHTML = s.events.length
+      ? s.events.map(e=>`<div class="ev"><span class="t">${e.t}</span>
+          <span class="a ${e.dir}">${e.dir==='in'?'→':'←'}</span>
+          <span>${e.cls}</span><span class="i">#${e.id}</span></div>`).join('')
+      : '<div class="empty">Событий пока нет</div>';
+
+    // ошибка
+    const h = $('hint');
+    if(s.error){ h.classList.add('err'); h.textContent = '⚠ ' + s.error; }
+    else if(h.classList.contains('err')){ location.reload(); }
+
+    if(!s.running && running){
+      running=false; $('bStart').disabled=trainBusy; $('bStop').disabled=true;
+    }
+  }catch(e){ $('dot').classList.remove('on'); }
+}
+setInterval(tick, 700); tick();
+
+// ── датасет ───────────────────────────────────────────────────────────────
+$('bLabel').onclick = () => { location.href = '/label'; };
+$('bDsRefresh').onclick = () => { loadDataset(); loadBuilt(); };
+
+async function loadDataset(){
+  let d;
+  try{ d = await (await fetch('/dataset')).json(); }
+  catch(e){
+    $('dsTbl').innerHTML = '<tr><td colspan="3" class="empty">Не удалось получить список классов</td></tr>';
+    return;
+  }
+  const cls = d.classes || [];
+  $('dsTbl').innerHTML = cls.length
+    ? cls.map(c=>`<tr><td>${c.name}</td><td class="num">${c.frames}</td>
+                  <td class="num" style="color:${c.labeled ? 'var(--ok)' : 'var(--muted)'}">${c.labeled}</td></tr>`).join('')
+      + `<tr><td style="color:var(--muted)">всего</td><td class="num">${d.total_frames}</td>
+         <td class="num">${d.total_labeled}</td></tr>`
+    : '<tr><td colspan="3" class="empty">Классов пока нет</td></tr>';
+
+  // подсказка под таблицей — своя для каждого состояния
+  const h = $('dsHint');
+  h.classList.remove('warn');
+  if(!d.total_frames){
+    h.classList.add('warn');
+    h.innerHTML = '<b>Кадров пока нет.</b> Открой страницу телефона, наведи камеру на деталь и включи там съёмку — '
+                + 'кадры сами лягут в датасет. Нужно хотя бы 100–200 снимков на каждый вид детали, с разных сторон и при разном свете.';
+  }else if(!d.total_labeled){
+    h.classList.add('warn');
+    h.innerHTML = `<b>Кадры есть (${d.total_frames}), но ни один не размечен.</b> Сначала нажми «Разметить →» и обведи детали рамками. `
+                + 'Проще всего обвести одну деталь на первом кадре и запустить автоматическую обводку — потом останется поправить черновик. '
+                + 'Без разметки собирать датасет и обучать модель бессмысленно.';
+  }else{
+    h.innerHTML = `Размечено <b>${d.total_labeled}</b> кадров из ${d.total_frames}. `
+                + 'Собранный датасет складывается в папки для обучения: часть кадров идёт на обучение, часть — на проверку. '
+                + 'Проверочные кадры модель не видит во время учёбы, по ним и оценивается настоящая точность.';
+  }
+  $('bExport').disabled = !d.total_labeled;
+}
+
+$('bExport').onclick = async () => {
+  let ratio = parseFloat($('valRatio').value);
+  if(!(ratio > 0)) ratio = 0.2;                     // пусто или не число — берём привычную пятую часть
+  ratio = Math.min(0.5, Math.max(0.05, ratio));     // держим в тех же границах, что и поле
+  $('valRatio').value = ratio;
+  const box = $('dsExport');
+  box.style.display = 'block';
+  box.className = 'hint'; box.textContent = 'Собираю…';
+  $('bExport').disabled = true;
+  try{
+    const r = await post('/dataset/export', {val_ratio: ratio});
+    if(r.error){ box.className = 'hint err'; box.textContent = '⚠ ' + r.error; }
+    else{
+      box.className = 'hint good';
+      box.innerHTML = `✓ Датасет собран: обучающих <b>${r.train}</b>, проверочных <b>${r.val}</b>. `
+                    + `Классы: <b>${(r.classes||[]).join(', ') || '—'}</b>. Теперь можно обучать.`;
+    }
+  }catch(e){
+    box.className = 'hint err'; box.textContent = '⚠ Не получилось собрать датасет';
+  }
+  $('bExport').disabled = false;
+  loadDataset();
+  loadBuilt();          // состав собранного датасета изменился — показываем новый
+};
+
+loadDataset();
+// вернулись со страницы разметки — освежаем цифры
+document.addEventListener('visibilitychange', () => { if(!document.hidden){ loadDataset(); loadBuilt(); } });
+
+// ── на чём пойдёт обучение ────────────────────────────────────────────────
+// Человек не видит, какая разметка попадёт в обучение, — особенно когда деталей
+// несколько. Показываем состав собранного датасета прямо над полями обучения.
+let datasetBuilt = true;   // до первого ответа сервера кнопку обучения не блокируем
+let trainBtnBusy = false;  // обучение идёт или ждём его запуска
+let builtSkip = 0;         // счётчик опросов /train/status, чтобы не заводить свой таймер
+
+// кнопку «Обучить» гасят две разные причины — сводим их в одном месте
+function refreshTrainBtn(){ $('bTrain').disabled = trainBtnBusy || !datasetBuilt; }
+
+// Тяжёлая модель на маленьком датасете не учится, а срывается: проверено на
+// живых данных — yolo11m (20 млн параметров) на 78 кадрах трижды разваливалась
+// на 27-30 эпохе, а yolo11n (2.6 млн) на тех же кадрах дала mAP50 0.995.
+let lastTrainCount = 0;
+function checkBaseModel(trainCount){
+  if(trainCount) lastTrainCount = trainCount;
+  const h = $('trBaseHint'), base = $('trBase').value, n = lastTrainCount;
+  if(!n){ h.style.display = 'none'; return; }
+  const heavy = (base === 'yolo11m.pt' && n < 1000) || (base === 'yolo11s.pt' && n < 300);
+  h.style.display = 'block';
+  if(heavy){
+    h.className = 'hint warn';
+    h.innerHTML = `⚠ Кадров всего ${n} — для такой модели это мало. Она не успеет `
+      + 'научиться и, скорее всего, развалится на середине обучения: оценка рухнет '
+      + 'до нуля и уже не восстановится. Возьми <b>yolo11n.pt</b>.';
+  }else{
+    h.className = 'hint';
+    h.innerHTML = `Кадров ${n} — размер модели подобран верно. `
+      + 'Правило: чем меньше датасет, тем легче должна быть модель.';
+  }
+}
+$('trBase').addEventListener('change', () => checkBaseModel(0));
+
+async function loadBuilt(){
+  let d;
+  try{ d = await (await fetch('/dataset/built')).json(); }
+  catch(e){
+    // связь пропала — состояние кнопки не трогаем, чтобы не заблокировать её зря
+    $('trDsTbl').innerHTML = '<tr><td colspan="3" class="empty">Не удалось узнать состав датасета</td></tr>';
+    return;
+  }
+  const st = $('trDsState'), miss = $('trDsMissing');
+
+  if(!d.built){
+    datasetBuilt = false; refreshTrainBtn();
+    $('trDsTbl').innerHTML = '<tr><td colspan="3" class="empty">Датасет ещё не собран</td></tr>';
+    st.className = 'hint warn';
+    st.innerHTML = '⚠ ' + (d.note || 'Датасет ещё не собран — нажми «Собрать датасет».')
+                 + ' Пока учиться не на чем, поэтому кнопка «Обучить» выключена.';
+    miss.style.display = 'none';
+    return;
+  }
+
+  datasetBuilt = true; refreshTrainBtn();
+  checkBaseModel(d.train || 0);
+
+  // порядок классов = их номера в датасете, поэтому список не сортируем
+  const cls = d.classes || [], per = d.per_class || {};
+  $('trDsTbl').innerHTML = cls.length
+    ? cls.map(c=>{
+        const p = per[c] || {};
+        return `<tr><td>${c}</td><td class="num">${p.train || 0}</td>
+                <td class="num">${p.val || 0}</td></tr>`;
+      }).join('')
+      + `<tr><td style="color:var(--muted)">всего</td><td class="num">${d.train || 0}</td>
+         <td class="num">${d.val || 0}</td></tr>`
+    : '<tr><td colspan="3" class="empty">В собранном датасете нет классов</td></tr>';
+
+  const changed = (d.changed || []).join(', ');
+  if(d.stale){
+    st.className = 'hint warn';
+    st.innerHTML = '⚠ <b>Разметку меняли уже после сборки</b>'
+                 + (changed ? ` (классы: <b>${changed}</b>)` : '') + '. '
+                 + 'Нажми «Собрать датасет» ещё раз, иначе обучение пойдёт по старому составу.';
+  }else{
+    st.className = 'hint good';
+    st.innerHTML = `✓ Собрано ${d.at || '—'}, состав актуален.`;
+  }
+
+  const missing = d.missing || [];
+  miss.style.display = missing.length ? 'block' : 'none';
+  if(missing.length){
+    miss.className = 'hint';
+    miss.innerHTML = `Без разметки, в обучение не попадут: <b>${missing.join(', ')}</b>. `
+                   + 'Размечай их кадры и собирай датасет заново, если эти детали тоже надо считать.';
+  }
+}
+loadBuilt();
+
+// ── обучение ──────────────────────────────────────────────────────────────
+$('bTrain').onclick = async () => {
+  const name = $('trName').value.trim();
+  if(!/^[A-Za-z0-9_-]+$/.test(name)){
+    setTrainHint('err', '⚠ Имя модели — только латинские буквы, цифры, дефис и подчёркивание.');
+    return;
+  }
+  // камеру гасим сами: видеокарта нужна обучению целиком
+  if(running){
+    await post('/stop');
+    $('video').src=''; $('video').style.display='none'; $('ph').style.display='block';
+    $('bStop').disabled = true; running = false;
+  }
+  trainPending = Date.now();
+  trainDone = false;
+  trainBtnBusy = true;
+  $('bTrain').disabled = true;
+  $('bStart').disabled = true;
+  setTrainHint('', 'Запускаю обучение… первая эпоха начнётся не сразу: модель готовит кадры.');
+  try{
+    const r = await post('/train/start', {epochs: parseInt($('trEpochs').value) || 80,
+                                          model: $('trBase').value, name: name});
+    if(r.error){ setTrainHint('err', '⚠ ' + r.error); trainPending = 0; $('bStart').disabled = running; }
+  }catch(e){
+    setTrainHint('err', '⚠ Не удалось запустить обучение');
+    trainPending = 0; $('bStart').disabled = running;
+  }
+  trainTick();
+};
+
+$('bTrainStop').onclick = async () => {
+  $('bTrainStop').disabled = true;
+  await post('/train/stop').catch(()=>{});
+  setTrainHint('warn', 'Останавливаю обучение… это займёт до конца текущей эпохи.');
+  trainTick();
+};
+
+function setTrainHint(kind, html){
+  const h = $('trHint');
+  h.className = 'hint' + (kind ? ' ' + kind : '');
+  h.innerHTML = html;
+}
+
+// человеческие названия метрик, лишнее из ключа убираем
+const METRIC_RU = {
+  'mAP50':'точность mAP50', 'mAP50-95':'точность mAP50-95',
+  'precision':'точность', 'recall':'полнота',
+  'box_loss':'ошибка рамок', 'cls_loss':'ошибка классов', 'dfl_loss':'ошибка формы'
+};
+function metricName(k){
+  const short = String(k).replace(/^.*\//, '').replace(/\(.*\)$/, '');
+  return METRIC_RU[short] || short;
+}
+
+let trainWas = null;      // прошлое значение running, чтобы ловить моменты перехода
+let trainDone = false;    // о готовой модели сообщаем один раз
+let trainPending = 0;     // момент нажатия «Обучить», пока сервер ещё не поднял обучение
+
+async function trainTick(){
+  let s;
+  try{ s = await (await fetch('/train/status')).json(); }
+  catch(e){ return; }
+
+  if(s.running) trainPending = 0;
+  // если сервер за 20 секунд так и не начал — кнопку возвращаем, что-то пошло не так
+  if(trainPending && Date.now() - trainPending > 20000) trainPending = 0;
+
+  trainBtnBusy = !!(s.running || trainPending);
+  refreshTrainBtn();          // вторая причина не пускать в обучение — несобранный датасет
+  // состав датасета освежаем на этом же опросе, раз в ~10 секунд: свой таймер не нужен
+  if(++builtSkip >= 5){ builtSkip = 0; loadBuilt(); }
+  // остановку уже попросили — нажимать второй раз нечего
+  $('bTrainStop').disabled = !s.running || !!s.stopping;
+  if(s.running !== trainWas){          // камеру трогаем только в момент смены состояния
+    trainWas = s.running;
+    trainBusy = s.running;
+    $('bStart').disabled = trainBusy || running;
+  }
+
+  $('trBox').style.display = (s.running || s.epoch || (s.log && s.log.length)) ? 'block' : 'none';
+
+  const total = s.epochs || 0, ep = s.epoch || 0;
+  const pct = total ? Math.min(100, Math.round(ep / total * 100)) : 0;
+  $('trBar').style.width = pct + '%';
+  $('trEp').textContent = total ? `эпоха ${ep} из ${total}` : 'готовлюсь…';
+  $('trPct').textContent = pct + '%';
+
+  const m = Object.entries(s.metrics || {});
+  $('trMetrics').innerHTML = m.length
+    ? m.map(([k,v])=>`<div class="chip">${metricName(k)} <b>${typeof v === 'number' ? (+v).toFixed(3) : v}</b></div>`).join('')
+    : '';
+
+  const log = $('trLog');
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = Array.isArray(s.log) ? s.log.join('\n') : (s.log || '');
+  if(atBottom) log.scrollTop = log.scrollHeight;
+
+  if(s.error && !trainPending){       // пока ждём запуска, старую ошибку не показываем
+    setTrainHint('err', '⚠ ' + s.error);
+    trainDone = false;
+  }else if(s.stopping){               // пережить перезагрузку страницы: надпись не должна пропадать
+    setTrainHint('warn', 'Останавливаю обучение… это займёт до конца текущей эпохи.');
+    trainDone = false;
+  }else if(s.running){
+    setTrainHint('warn', '⚠ Идёт обучение: камера остановлена, видеокарта занята. '
+                       + 'Страницу можно закрыть — обучение не прервётся.');
+    trainDone = false;
+  }else if(s.done && !trainDone){
+    trainDone = true;
+    await loadModels();     // своя модель уже должна быть в списке
+    loadBuilt();            // обучение закончилось — сверяем состав датасета заново
+    setTrainHint('good', s.result_model
+      ? `✓ Обучение закончено. Модель <b>${s.result_model}</b> появилась в списке моделей — `
+        + 'выбери её в карточке «Источник и модель» и запусти камеру.'
+      : '✓ Обучение закончено.');
+  }
+}
+setInterval(trainTick, 2000); trainTick();
+</script>
+</body>
+</html>

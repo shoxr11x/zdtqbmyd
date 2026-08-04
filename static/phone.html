@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Vision · камера</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161d27; --line:#28323f; --text:#e8eef5; --muted:#8b9bb0;
+    --accent:#3ea6ff; --ok:#37d67a; --warn:#ffb020; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  /* Страница прокручивается целиком. Раньше она была жёстко в размер экрана,
+     и нижние кнопки просто оказывались недоступны. Пусть лучше видео уезжает
+     вверх при прокрутке — до всего можно дотянуться. */
+  html{height:100%}
+  body{
+    min-height:100%; margin:0;
+    background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI",system-ui,sans-serif;
+    display:flex; flex-direction:column;
+    padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+
+  header{
+    display:flex; align-items:center; gap:9px; padding:10px 14px;
+    border-bottom:1px solid var(--line); background:#131a24; flex:none;
+  }
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--bad);box-shadow:0 0 8px var(--bad);flex:none}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  header b{font-size:14px;font-weight:650}
+  header .m{margin-left:auto;font-size:11px;color:var(--muted);text-align:right;line-height:1.4}
+
+  /* ── вкладки: видео и соединение общие, меняется только нижняя панель ── */
+  .tabs{display:flex; flex:none; background:#131a24; border-bottom:1px solid var(--line)}
+  .tabs button{
+    flex:1; padding:12px 8px; border:0; border-bottom:2px solid transparent; border-radius:0;
+    background:transparent; color:var(--muted); font-size:14.5px; font-weight:650;
+    display:flex; align-items:center; justify-content:center; gap:7px;
+  }
+  .tabs button.on{color:var(--text); border-bottom-color:var(--accent); background:#182231}
+  .tabDot{width:8px; height:8px; border-radius:50%; background:var(--bad);
+          box-shadow:0 0 7px var(--bad); display:none}
+  .tabDot.on{display:block; animation:blink 1.2s infinite}
+  @keyframes blink{50%{opacity:.2}}
+
+  /* Видео не должно схлопываться в полоску: панель съёмки высокая, и без
+     нижней границы она отжимала картинку почти в ноль. Даём видео минимум
+     сорок процентов экрана, а панели — прокрутку, если не помещается. */
+  /* Видео крупное и с постоянной высотой. Панель под ним может быть любой
+     длины — страница прокрутится, видео уедет вверх. */
+  #stage{flex:none; position:relative; background:#000; overflow:hidden; height:48vh; min-height:260px}
+  video,canvas{position:absolute; inset:0; width:100%; height:100%; object-fit:contain}
+  video{background:#000}
+
+  #hello{
+    position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:16px; padding:26px; text-align:center;
+  }
+  #hello p{color:var(--muted); font-size:14px; line-height:1.65; margin:0}
+
+  /* Панель показывается целиком, какой бы длинной ни была: прокручивается
+     вся страница, а не панель внутри себя. */
+  footer{
+    flex:none; padding:12px 14px 20px;
+    border-top:1px solid var(--line); background:#131a24;
+  }
+  button.ghost{
+    background:transparent; border-color:transparent; color:var(--muted);
+    font-size:13px; font-weight:600; padding:8px;
+  }
+  /* ссылка, которая выглядит и нажимается как кнопка */
+  .asbtn{
+    display:block; text-align:center; text-decoration:none;
+    padding:14px; border-radius:12px; border:1px solid #2b4a63; background:#16293a;
+    color:var(--accent); font-size:15px; font-weight:650;
+  }
+  .panel{display:none}
+  .panel.on{display:block}
+  #panelCap.on{display:flex; flex-direction:column; gap:9px}
+  #panelCap > button{flex:none}
+
+  .tot{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+  .t{background:#1c2531; border:1px solid var(--line); border-radius:12px; padding:11px; text-align:center}
+  .t .n{font-size:29px; font-weight:800; line-height:1}
+  .t .c{font-size:11px; color:var(--muted); margin-top:5px}
+  .t.a .n{color:var(--ok)} .t.b .n{color:var(--warn)}
+
+  /* «в кадре сейчас» — сколько чего нашлось прямо сейчас */
+  .chips{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; min-height:26px; align-items:center}
+  .chip{
+    display:flex; align-items:center; gap:6px; background:#1c2531; border:1px solid var(--line);
+    border-radius:20px; padding:4px 6px 4px 11px; font-size:12.5px;
+  }
+  .chip .n{
+    background:var(--accent); color:#04121f; font-weight:800; border-radius:12px;
+    padding:1px 8px; font-size:12px; min-width:22px; text-align:center;
+  }
+  .chip .n.many{background:var(--ok)}
+  .dim{color:var(--muted); font-size:12px}
+
+  .row{display:flex; gap:8px; margin-top:10px}
+  #panelCap .row{margin-top:0}
+  button{
+    flex:1; padding:13px; border-radius:11px; border:1px solid var(--line); background:#1c2531;
+    color:var(--text); font-size:15px; font-weight:600; font-family:inherit;
+  }
+  button.primary{background:var(--accent); color:#04121f; border-color:var(--accent)}
+  button:disabled{opacity:.4}
+  button.big{padding:16px 30px; font-size:17px; flex:none}
+  button.rec{background:#3a1a22; border-color:#6b2b38; color:#ff9aa8}
+  input[type=text]{
+    flex:1; min-width:0; padding:13px 12px; border-radius:11px; background:#1c2531;
+    border:1px solid var(--line); color:var(--text); font-size:15px; font-family:inherit;
+  }
+
+  /* ── вкладка «Снимать» ─────────────────────────────────────────────── */
+  .lbl{font-size:12.5px; color:var(--muted)}
+  .lbl b{color:var(--text); font-size:13.5px; font-weight:650}
+  #clsName{font-size:18px; font-weight:650; padding:15px 13px; letter-spacing:.3px}
+  #clsName.bad{border-color:var(--bad)}
+  #nameHint{display:none; font-size:12.5px; color:var(--warn); line-height:1.45}
+
+  #pick{display:flex; align-items:center; justify-content:center; gap:8px; font-size:14.5px}
+  .picklist{
+    display:none; border:1px solid var(--line); border-radius:11px; background:#141b25;
+    max-height:34vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  }
+  .picklist.open{display:block}
+  .pitem{display:flex; align-items:center; gap:8px; padding:0 8px 0 0; border-bottom:1px solid #1e2733}
+  .pitem:last-child{border-bottom:0}
+  .pitem .nm{
+    flex:1; min-width:0; display:flex; flex-direction:column; align-items:flex-start; gap:3px;
+    background:transparent; border:0; border-radius:0; padding:12px 10px; text-align:left;
+  }
+  .pitem .nm .t{font-size:15.5px; font-weight:650; display:flex; align-items:center; gap:7px}
+  .pitem .nm .cnt{font-size:11.5px; color:var(--muted); font-weight:400}
+  .pitem .tag{
+    background:#1d3346; color:var(--accent); border-radius:6px; padding:1px 6px;
+    font-size:10px; font-weight:700; letter-spacing:.2px;
+  }
+  .pitem .ren{
+    flex:none; width:40px; height:40px; padding:0; border-radius:10px;
+    background:#1c2531; border:1px solid var(--line); color:var(--muted); font-size:15px; line-height:1;
+  }
+  .pitem .del{
+    flex:none; width:40px; height:40px; padding:0; border-radius:10px;
+    background:#2a1720; border:1px solid #4a2530; color:#ff9aa8; font-size:15px; line-height:1;
+  }
+  .pempty{padding:14px 12px; font-size:12.5px; color:var(--muted); line-height:1.5}
+
+  #rec{width:100%; padding:18px; font-size:19px; font-weight:800; border-radius:14px}
+  .stat{text-align:center; font-size:13px; color:var(--muted); line-height:1.5}
+  .stat b{color:var(--text); font-weight:700}
+  #stand{
+    display:none; background:#2e2412; border:1px solid #5a4519; color:#ffcf7a;
+    border-radius:11px; padding:10px 12px; font-size:12.5px; line-height:1.5;
+  }
+  .memo{
+    background:#141b25; border:1px solid var(--line); border-radius:11px; padding:10px 12px;
+    font-size:11.5px; color:var(--muted); line-height:1.7;
+  }
+
+  #err{
+    position:absolute; left:14px; right:14px; bottom:14px; background:#2a1720; border:1px solid #4a2530;
+    color:#ff9a9a; border-radius:11px; padding:12px 14px; font-size:13px; line-height:1.6; display:none;
+  }
+  .foot-link{text-align:center; margin-top:9px}
+  .foot-link a{color:var(--muted); font-size:12px; text-decoration:none}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot" id="dot"></div>
+  <b>📱 Камера → сервер</b>
+  <div class="m">
+    отправка <b id="mTx">—</b><br>
+    YOLO <b id="mYolo">—</b><br>
+    отставание <b id="mLag">—</b>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button id="tabLive" class="on">👁 Смотреть</button>
+  <button id="tabCap">🎬 Снимать<span class="tabDot" id="tabDot"></span></button>
+</nav>
+
+<div id="stage">
+  <video id="v" playsinline muted autoplay></video>
+  <canvas id="c"></canvas>
+  <div id="hello">
+    <div style="font-size:44px">🎥</div>
+    <p>Наведи камеру телефона на предметы —<br>распознавать будет компьютер.<br><br>
+       Safari спросит разрешение на камеру: нажми <b>«Разрешить»</b>.</p>
+    <button class="primary big" id="go">Включить камеру</button>
+  </div>
+  <div id="err"></div>
+</div>
+
+<footer>
+
+  <!-- ── вкладка «Смотреть»: рамки и счёт ворот ─────────────────────── -->
+  <section class="panel on" id="panelLive">
+    <div class="chips" id="live"><span class="dim">в кадре пока пусто</span></div>
+    <div class="tot">
+      <div class="t a"><div class="n" id="tIn">0</div><div class="c">прошло вперёд →</div></div>
+      <div class="t b"><div class="n" id="tOut">0</div><div class="c">← прошло назад</div></div>
+    </div>
+    <div class="row">
+      <button id="flip">🔄 Сменить камеру</button>
+      <button id="reset">Сбросить счёт</button>
+    </div>
+    <div class="foot-link">
+      <a href="/?desktop=1">открыть панель компьютера →</a>
+    </div>
+  </section>
+
+  <!-- ── вкладка «Снимать»: сбор кадров в датасет ────────────────────── -->
+  <section class="panel" id="panelCap">
+    <div class="lbl"><b>Имя детали</b> — так будет называться папка с кадрами</div>
+    <div class="row">
+      <input type="text" id="clsName" value="detal" placeholder="например rama" autocapitalize="off"
+             autocorrect="off" spellcheck="false" inputmode="latin">
+    </div>
+    <div id="nameHint"></div>
+
+    <button id="pick">📁 Уже снято <span id="pickArrow">▾</span></button>
+    <div class="picklist" id="pickList"></div>
+
+    <button id="rec" class="primary">● Снимать</button>
+
+    <div class="stat" id="recHint">нажми «Снимать» и медленно обойди деталь кругом</div>
+    <div id="stand">
+      Пропущенные растут, а сохранённых нет — телефон стоит на месте и снимает
+      один и тот же кадр. Обойди деталь, меняй угол и высоту.
+    </div>
+
+    <!-- Разметка — следующий шаг после съёмки, поэтому кнопка видна всегда.
+         Раньше она пряталась внутри свёрнутого блока, и найти её было нельзя. -->
+    <a class="asbtn" href="/label-phone">✂ Разметить снятые кадры</a>
+
+    <!-- Памятка и смена камеры свёрнуты: без них видео занимает половину
+         экрана вместо узкой полоски. Разворачиваются одним касанием. -->
+    <button id="more" class="ghost">Как снимать и что ещё есть <span id="moreArrow">▾</span></button>
+    <div id="extra" style="display:none">
+      <div class="memo">
+        · Обходи деталь кругом секунд 10: сбоку, сверху, вблизи и издали.<br>
+        · Меняй фон и свет — стол, пол, у окна, под лампой.<br>
+        · Лучше 4-5 коротких заходов, чем один длинный.<br>
+        · Сними и пустые кадры без детали — с ними меньше ложных срабатываний.
+      </div>
+      <div class="row">
+        <button id="flip2">🔄 Сменить камеру</button>
+      </div>
+      <div class="foot-link">
+        <a href="/label">разметка на компьютере (мышью точнее) →</a>
+      </div>
+    </div>
+  </section>
+
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const video = $('v'), canvas = $('c'), ctx = canvas.getContext('2d');
+
+// холст, с которого снимаем кадр на отправку (640 в ширину — этого YOLO хватает)
+const grab = document.createElement('canvas');
+const gctx = grab.getContext('2d');
+// Для распознавания хватает 640 — YOLO всё равно ужимает кадр до этого размера.
+// Но кадры в датасет шлём крупнее: их потом размечать вручную, а обводить
+// деталь рамкой на мелкой картинке мучительно.
+const W_NORMAL = 640, W_CAPTURE = 1024;
+// Раньше здесь стояла пауза 70 мс — она и держала потолок в 14 кадров/с.
+// Темп теперь задаёт сам сервер: следующий кадр уходит сразу, как пришёл ответ
+// на предыдущий. Так быстрее и при этом очередь не копится.
+const PERIOD = 15;               // как часто проверяем, можно ли слать
+
+let ws = null, stream = null, facing = 'environment', reconnectTimer = null;
+let sending = false, sentAt = 0, lastReplyAt = 0, loopsStarted = false, lag = 0;
+let txTimes = [], lastData = {boxes: [], line_pos: .5, line_orient: 'v'};
+
+// Сервер отдаёт рамки в пикселях ТОГО кадра, который получил. При включении и
+// выключении съёмки кадр меняет размер (640 ⇄ 1024) вместе с холстом, и ответ
+// на прежний кадр без пересчёта нарисовался бы не в том масштабе — рамки
+// дёргались бы к левому верхнему углу. Поэтому запоминаем размер каждого
+// отправленного кадра, а в момент ответа — размер того, к которому он относится.
+let sentW = 0, sentH = 0;        // размер последнего отправленного кадра
+let dataW = 0, dataH = 0;        // размер кадра, которому соответствует lastData
+
+// Если ответ на кадр не пришёл за это время — считаем его потерянным и шлём дальше.
+// Без этого один потерянный ответ навсегда останавливал отправку.
+const REPLY_TIMEOUT = 2000;
+// Если сервер молчит дольше — пересоздаём соединение
+const DEAD_TIMEOUT = 6000;
+
+const PALETTE = ['#3ea6ff','#37d67a','#ffb020','#ff5c5c','#b478ff','#00d2c8','#ff78b4','#a0c83c'];
+
+function showErr(msg){ $('err').style.display = 'block'; $('err').innerHTML = msg; }
+function hideErr(){ $('err').style.display = 'none'; }
+
+// ── камера ────────────────────────────────────────────────────────────────
+async function startCamera(){
+  hideErr();
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    showErr('Браузер не даёт доступ к камере. Убедись, что адрес начинается с <b>https://</b> — по http Safari камеру не пускает.');
+    return;
+  }
+  try{
+    if(stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    $('hello').style.display = 'none';
+    keepAwake();
+    connect();
+    // «Сменить камеру» зовёт эту функцию снова — циклы должны остаться в
+    // единственном экземпляре, иначе они начнут дублировать друг друга
+    if(!loopsStarted){ loopsStarted = true; tick(); render(); }
+  }catch(e){
+    showErr('Камера не включилась: ' + e.name + '. Если это NotAllowedError — разреши камеру в настройках Safari для этого сайта.');
+  }
+}
+
+async function keepAwake(){
+  try{ if('wakeLock' in navigator) await navigator.wakeLock.request('screen'); }catch(e){}
+}
+
+// ── связь с сервером ──────────────────────────────────────────────────────
+function connect(){
+  if(ws && ws.readyState <= 1) return;          // уже открыт или открывается
+  clearTimeout(reconnectTimer); reconnectTimer = null;
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/camera`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    $('dot').classList.add('on');
+    sending = false;                            // начинаем с чистого листа
+    lastReplyAt = performance.now();
+    hideErr();
+  };
+  ws.onclose = () => {
+    $('dot').classList.remove('on');
+    sending = false;                            // иначе отправка встанет навсегда
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 1200);
+  };
+  ws.onerror = () => {
+    sending = false;
+    showErr('Нет связи с сервером. Проверь, что компьютер в той же сети и включён.');
+  };
+  ws.onmessage = e => {
+    try { lastData = JSON.parse(e.data); } catch(err){ return; }
+    // ответ относится к последнему отправленному кадру — запоминаем его размер
+    dataW = sentW; dataH = sentH;
+    $('tIn').textContent  = lastData.in;
+    $('tOut').textContent = lastData.out;
+    $('mYolo').textContent = lastData.fps_detect + '/с';
+    sending = false;
+    lastReplyAt = performance.now();
+    // сколько кадр летал туда-обратно: это и есть отставание рамок от видео
+    lag = lag ? lag * 0.8 + (lastReplyAt - sentAt) * 0.2 : lastReplyAt - sentAt;
+    $('mLag').textContent = Math.round(lag) + ' мс';
+    updateLive();
+    // счётчик снятых кадров идёт с сервера — он и пишет их на диск
+    if(lastData.capturing !== undefined){
+      capturing = lastData.capturing;
+      showRec(lastData.capture_count, lastData.capture_skipped);
+    }
+  };
+}
+
+// Сколько каждого предмета видно прямо сейчас. Считаем по рамкам: у каждой
+// свой номер, поэтому три одинаковые детали дают именно тройку, а не единицу.
+function updateLive(){
+  const byName = {};
+  for(const b of lastData.boxes) byName[b.name] = (byName[b.name] || 0) + 1;
+  const items = Object.entries(byName).sort((a, b) => b[1] - a[1]);
+  $('live').innerHTML = items.length
+    ? items.map(([name, n]) =>
+        `<span class="chip">${name}<span class="n${n > 1 ? ' many' : ''}">${n}</span></span>`).join('')
+    : '<span class="dim">в кадре пока пусто</span>';
+}
+
+// ── цикл: снять кадр → отправить → нарисовать рамки ───────────────────────
+function tick(){
+  setTimeout(tick, PERIOD);
+  if(!video.videoWidth) return;
+
+  // подгоняем размеры холстов под пропорции камеры (один раз при смене)
+  const w = capturing ? W_CAPTURE : W_NORMAL;
+  const h = Math.round(w * video.videoHeight / video.videoWidth);
+  if(grab.width !== w || grab.height !== h){
+    grab.width = canvas.width = w;
+    grab.height = canvas.height = h;
+  }
+
+  const now = performance.now();
+
+  // сторож №1: ответ на кадр потерялся — не ждём его вечно
+  if(sending && now - sentAt > REPLY_TIMEOUT) sending = false;
+
+  // сторож №2: сервер молчит совсем — пересоздаём соединение
+  if(ws && ws.readyState === 1 && lastReplyAt && now - lastReplyAt > DEAD_TIMEOUT){
+    lastReplyAt = now;
+    try { ws.close(); } catch(e){}
+    return;
+  }
+
+  // не копим очередь: следующий кадр только после ответа на предыдущий
+  if(!ws || ws.readyState !== 1 || sending || ws.bufferedAmount > 200000) return;
+
+  sending = true; sentAt = now;
+  gctx.drawImage(video, 0, 0, grab.width, grab.height);
+  sentW = grab.width; sentH = grab.height;   // в этих пикселях сервер вернёт рамки
+  grab.toBlob(b => {
+    if(!b || !ws || ws.readyState !== 1){ sending = false; return; }
+    // Blob уходит в сокет напрямую: раньше он сначала перекладывался
+    // в массив байтов — лишний шаг и лишняя задержка на каждом кадре
+    try { ws.send(b); } catch(e){ sending = false; return; }
+
+    const t = performance.now();
+    txTimes.push(t);
+    if(txTimes.length > 30) txTimes.shift();
+    if(txTimes.length > 1){
+      const fps = (txTimes.length - 1) / ((t - txTimes[0]) / 1000);
+      $('mTx').textContent = fps.toFixed(1) + ' к/с';
+    }
+  }, 'image/jpeg', capturing ? 0.85 : 0.5);   // в датасет — качеством повыше
+}
+
+// Safari замораживает вкладку, когда её свернули или погас экран: таймеры встают,
+// сокет закрывается. Возвращаемся — приводим всё в чувство.
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState !== 'visible') return;
+  sending = false;
+  lastReplyAt = performance.now();
+  keepAwake();
+  connect();
+});
+
+// Рамки перерисовываем в такт экрану, отдельно от отправки — так наложение
+// остаётся плавным, даже если сервер отвечает неровно.
+function render(){
+  requestAnimationFrame(render);
+  if(canvas.width) draw();
+}
+
+// ── рамки поверх своего видео ─────────────────────────────────────────────
+function draw(){
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // рамки пришли в пикселях кадра dataW×dataH — переводим их в пиксели холста
+  const sx = dataW ? W / dataW : 1, sy = dataH ? H / dataH : 1;
+
+  // «ворота»
+  ctx.strokeStyle = '#3cdcff'; ctx.lineWidth = 3;
+  ctx.beginPath();
+  if(lastData.line_orient === 'v'){
+    const x = W * lastData.line_pos; ctx.moveTo(x, 0); ctx.lineTo(x, H);
+  }else{
+    const y = H * lastData.line_pos; ctx.moveTo(0, y); ctx.lineTo(W, y);
+  }
+  ctx.stroke();
+
+  // Когда деталей много, полные подписи налезают друг на друга и мешают.
+  // Оставляем только номер — по нему и так видно, что объекты разные.
+  const crowded = lastData.boxes.length > 6;
+  ctx.font = crowded ? '700 13px -apple-system, sans-serif' : '600 14px -apple-system, sans-serif';
+  ctx.textBaseline = 'top';
+  for(const b of lastData.boxes){
+    const col = PALETTE[b.ci % PALETTE.length];
+    const x = b.x1 * sx, y = b.y1 * sy;
+    ctx.strokeStyle = col; ctx.lineWidth = 3;
+    ctx.strokeRect(x, y, (b.x2 - b.x1) * sx, (b.y2 - b.y1) * sy);
+
+    const text = crowded ? `#${b.id}` : `${b.name} #${b.id} · ${Math.round(b.conf * 100)}%`;
+    const w = ctx.measureText(text).width + 10;
+    ctx.fillStyle = col;
+    ctx.fillRect(x, Math.max(0, y - 20), w, 20);
+    ctx.fillStyle = '#0a121c';
+    ctx.fillText(text, x + 5, Math.max(0, y - 19));
+  }
+}
+
+// ── кнопки ────────────────────────────────────────────────────────────────
+// Открыто по http? Тогда камеры не будет — Safari её по http не отдаёт.
+// Проверяем сразу, не дожидаясь нажатия, и даём готовую ссылку.
+if(location.protocol !== 'https:'){
+  showErr('Открыто по <b>http</b> — Safari по такому адресу камеру не даёт.<br>'
+        + `<a href="https://${location.hostname}:8443/phone" style="color:#3ea6ff">`
+        + `Открыть по https →</a>`);
+}
+
+function flipCamera(){
+  facing = (facing === 'environment') ? 'user' : 'environment';
+  startCamera();
+}
+
+$('go').onclick    = startCamera;
+$('flip').onclick  = flipCamera;
+$('flip2').onclick = flipCamera;          // та же кнопка во вкладке «Снимать»
+$('reset').onclick = () => fetch('/reset', {method: 'POST'});
+
+// памятка и вторая кнопка свёрнуты, чтобы видео занимало больше экрана
+$('more').onclick = () => {
+  const box = $('extra'), open = box.style.display !== 'none';
+  box.style.display = open ? 'none' : 'block';
+  $('moreArrow').textContent = open ? '▾' : '▴';
+};
+
+// ── вкладки ───────────────────────────────────────────────────────────────
+// Переключаем ТОЛЬКО нижнюю панель. Видео, сокет и циклы общие и живут
+// независимо от того, какая вкладка открыта.
+function setTab(which){
+  const cap = (which === 'cap');
+  $('tabLive').classList.toggle('on', !cap);
+  $('tabCap').classList.toggle('on', cap);
+  $('panelLive').classList.toggle('on', !cap);
+  $('panelCap').classList.toggle('on', cap);
+  // если список классов раскрыт — при возврате на вкладку освежаем цифры
+  if(cap && pickOpen) loadClasses();
+}
+$('tabLive').onclick = () => setTab('live');
+$('tabCap').onclick  = () => setTab('cap');
+
+// ── съёмка кадров в датасет ───────────────────────────────────────────────
+const LS_KEY = 'vision.lastClass';        // последнее использованное имя детали
+
+let capturing = false;                    // идёт ли съёмка (флаг синхронизирует сервер)
+let nameOk = false;                       // имя детали прошло проверку
+let pickOpen = false;                     // раскрыт ли список «Уже снято»
+let recPrev = {n: 0, sk: 0};              // прошлые счётчики сервера
+let staleSkips = 0;                       // похожих кадров подряд без единого сохранённого
+
+function lsGet(k){ try{ return localStorage.getItem(k) || ''; }catch(e){ return ''; } }
+function lsSet(k, v){ try{ localStorage.setItem(k, v); }catch(e){} }
+const esc = s => String(s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// Причина отказа от сервера: он кладёт её в detail (а панель ещё смотрит в error).
+async function errText(r){
+  try{
+    const d = await r.json();
+    return esc(d.detail || d.error || ('ошибка ' + r.status));
+  }catch(e){ return 'ошибка ' + r.status; }
+}
+
+// Имя класса становится именем папки и именем файлов (rama_0001.jpg),
+// поэтому кириллицу и пробелы сюда пускать нельзя.
+function nameError(v){
+  if(!v)                                        return 'впиши имя детали, например rama';
+  if(/[^\x20-\x7E]/.test(v))                    return 'только латиницей, например rama';
+  if(!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(v))    return 'можно латиницу, цифры, дефис и подчёркивание';
+  return '';
+}
+
+function checkName(){
+  const v = $('clsName').value.trim();
+  const msg = nameError(v);
+  nameOk = !msg;
+  $('clsName').classList.toggle('bad', !nameOk && v.length > 0);
+  $('nameHint').textContent = msg;
+  $('nameHint').style.display = msg ? 'block' : 'none';
+  if(!capturing) $('rec').disabled = !nameOk;
+}
+$('clsName').addEventListener('input', checkName);
+
+function setName(n){
+  $('clsName').value = n;
+  lsSet(LS_KEY, n);
+  checkName();
+}
+
+// ── список «Уже снято» ────────────────────────────────────────────────────
+function openPick(){
+  pickOpen = true;
+  $('pickList').classList.add('open');
+  $('pickArrow').textContent = '▴';
+  loadClasses();
+}
+function closePick(){
+  pickOpen = false;
+  $('pickList').classList.remove('open');
+  $('pickArrow').textContent = '▾';
+}
+$('pick').onclick = () => { if(pickOpen) closePick(); else openPick(); };
+
+async function loadClasses(){
+  $('pickList').innerHTML = '<div class="pempty">загружаю…</div>';
+  try{
+    const d = await fetch('/dataset').then(r => r.json());
+    renderClasses(d.classes || []);
+  }catch(e){
+    $('pickList').innerHTML = '<div class="pempty">не удалось получить список классов</div>';
+  }
+}
+
+function renderClasses(list){
+  const last = lsGet(LS_KEY);
+  // последний использованный — наверх, остальные по количеству кадров
+  const arr = list.slice().sort((a, b) => {
+    if(a.name === last && b.name !== last) return -1;
+    if(b.name === last && a.name !== last) return 1;
+    return (b.frames || 0) - (a.frames || 0);
+  });
+  if(!arr.length){
+    $('pickList').innerHTML =
+      '<div class="pempty">пока ничего не снято — впиши имя выше и жми «Снимать»</div>';
+    return;
+  }
+  $('pickList').innerHTML = arr.map(c => {
+    const nm = esc(c.name), fr = c.frames || 0, lb = c.labeled || 0;
+    const tag = (c.name === last) ? '<span class="tag">последний</span>' : '';
+    return `<div class="pitem">
+        <button class="nm" data-pick="${nm}">
+          <span class="t">${nm}${tag}</span>
+          <span class="cnt">${fr} кадров · ${lb} размечено</span>
+        </button>
+        <button class="ren" data-ren="${nm}" title="переименовать">✎</button>
+        <button class="del" data-del="${nm}" data-frames="${fr}">✕</button>
+      </div>`;
+  }).join('');
+}
+
+$('pickList').addEventListener('click', async ev => {
+  if(capturing) return;                      // во время съёмки список трогать нельзя
+  const del = ev.target.closest('[data-del]');
+  if(del){
+    const name = del.getAttribute('data-del');
+    const fr   = del.getAttribute('data-frames');
+    if(!confirm(`Удалить класс «${name}» вместе со всеми кадрами (${fr})?\nВернуть их будет нельзя.`)) return;
+    del.disabled = true;
+    try{
+      const r = await fetch('/dataset/delete', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name})
+      });
+      // сервер отказал (например, класса уже нет) — молча глотать нельзя,
+      // иначе список не меняется и кажется, что кнопка не работает
+      if(!r.ok){
+        del.disabled = false;
+        showErr('Не удалось удалить класс: ' + await errText(r));
+        loadClasses();
+        return;
+      }
+      hideErr();
+      if(lsGet(LS_KEY) === name) lsSet(LS_KEY, '');
+      loadClasses();
+    }catch(e){
+      del.disabled = false;
+      showErr('Не удалось удалить класс: ' + e);
+    }
+    return;
+  }
+  const ren = ev.target.closest('[data-ren]');
+  if(ren){
+    const name = ren.getAttribute('data-ren');
+    const next = (prompt(`Новое имя класса «${name}»:`, name) || '').trim();
+    if(!next || next === name) return;
+    const bad = nameError(next);              // та же проверка, что и у поля имени
+    if(bad){ showErr('Имя не подходит: ' + bad); return; }
+    ren.disabled = true;
+    try{
+      const r = await fetch('/dataset/rename', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, new: next})
+      });
+      if(!r.ok){
+        ren.disabled = false;
+        showErr('Не удалось переименовать: ' + await errText(r));
+        return;
+      }
+      hideErr();
+      if(lsGet(LS_KEY) === name) lsSet(LS_KEY, next);
+      if($('clsName').value.trim() === name) setName(next);
+      loadClasses();
+    }catch(e){
+      ren.disabled = false;
+      showErr('Не удалось переименовать: ' + e);
+    }
+    return;
+  }
+  const pick = ev.target.closest('[data-pick]');
+  if(pick){
+    setName(pick.getAttribute('data-pick'));  // доснять к уже существующему классу
+    closePick();
+  }
+});
+
+// ── кнопка съёмки ─────────────────────────────────────────────────────────
+$('rec').onclick = async () => {
+  const want = !capturing;
+  if(want){
+    checkName();
+    if(!nameOk){ $('clsName').focus(); return; }
+    closePick();
+    recPrev = {n: 0, sk: 0}; staleSkips = 0;
+  }
+  try{
+    const r = await fetch('/capture', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({active: want, name: $('clsName').value.trim()})
+    }).then(r => r.json());
+    capturing = r.capturing;
+    if(r.name) $('clsName').value = r.name;
+    if(capturing) lsSet(LS_KEY, $('clsName').value.trim());
+    checkName();
+    showRec(r.count, r.skipped);
+    if(!capturing && pickOpen) loadClasses();   // после остановки цифры уже другие
+  }catch(e){ showErr('Не удалось включить съёмку: ' + e); }
+};
+
+function showRec(n, skipped){
+  n = Number(n) || 0;
+  const sk = Number(skipped) || 0;
+
+  $('rec').classList.toggle('rec', capturing);
+  $('rec').classList.toggle('primary', !capturing);
+  $('rec').textContent = capturing ? `■ Стоп · ${n}` : '● Снимать';
+  $('rec').disabled = !capturing && !nameOk;
+  $('clsName').disabled = capturing;
+  $('pick').disabled = capturing;
+  $('tabDot').classList.toggle('on', capturing);   // красная точка на вкладке
+
+  // Пропущенные — это кадры, слишком похожие на предыдущий сохранённый.
+  // Растёт быстро и почти без новых снимков — значит телефон стоит на месте,
+  // надо крутить деталь или обходить её.
+  if(capturing){
+    if(n > recPrev.n) staleSkips = 0;
+    else if(sk > recPrev.sk) staleSkips += sk - recPrev.sk;
+    recPrev = {n: n, sk: sk};
+    $('recHint').innerHTML = `сохранено <b>${n}</b> · пропущено похожих <b>${sk}</b>`;
+    $('stand').style.display = (staleSkips >= 25) ? 'block' : 'none';
+  }else{
+    recPrev = {n: 0, sk: 0}; staleSkips = 0;
+    $('stand').style.display = 'none';
+    $('recHint').innerHTML = n
+      ? `в прошлый заход сохранено <b>${n}</b> · пропущено похожих <b>${sk}</b>`
+      : 'нажми «Снимать» и медленно обойди деталь кругом';
+  }
+}
+
+// ── старт ─────────────────────────────────────────────────────────────────
+(function init(){
+  const saved = lsGet(LS_KEY);
+  if(saved) $('clsName').value = saved;     // подставляем прошлое имя детали
+  checkName();
+  showRec(0, 0);
+  setTab('live');
+})();
+</script>
+</body>
+</html>

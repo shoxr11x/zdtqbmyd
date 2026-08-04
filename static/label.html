@@ -1,0 +1,1028 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vision · разметка датасета</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#151c26; --panel2:#1c2531; --line:#28323f;
+    --text:#e8eef5; --muted:#8b9bb0; --accent:#3ea6ff; --ok:#37d67a; --warn:#ffb020; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{font-family:"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);
+       display:flex;flex-direction:column;overflow:hidden}
+
+  header{
+    display:flex;align-items:center;gap:14px;padding:12px 18px;flex:none;
+    border-bottom:1px solid var(--line);background:linear-gradient(180deg,#18222f,#0d1117);
+  }
+  header h1{font-size:16px;margin:0;font-weight:650}
+  .badges{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .badge{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 11px;
+         font-size:12px;color:var(--muted);white-space:nowrap}
+  .badge b{color:var(--text)}
+  a.back{color:var(--muted);text-decoration:none;font-size:13px;border:1px solid var(--line);
+         background:var(--panel2);border-radius:8px;padding:6px 11px}
+  a.back:hover{border-color:var(--accent);color:var(--text)}
+
+  /* три колонки: классы · кадр · инструменты */
+  .main{flex:1;display:grid;grid-template-columns:236px 1fr 350px;gap:14px;padding:14px;min-height:0}
+  @media(max-width:1400px){.main{grid-template-columns:206px 1fr 310px}}
+  .col{min-height:0;display:flex;flex-direction:column;gap:14px;overflow-y:auto}
+  .col.center{overflow:hidden}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;flex:none}
+  .card.grow{flex:1;min-height:0;display:flex;flex-direction:column}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);
+           margin:0 0 11px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .card h2 .r{margin-left:auto;color:var(--accent);text-transform:none;letter-spacing:0;font-size:12px}
+
+  button{padding:9px 14px;border-radius:9px;font-size:13.5px;font-weight:600;cursor:pointer;
+         font-family:inherit;background:var(--panel2);color:var(--text);border:1px solid var(--line);transition:.15s}
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button.primary{background:var(--accent);color:#04121f;border-color:var(--accent)}
+  button.danger{border-color:#4a2530;color:#ff9a9a}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .row.grid2{display:grid;grid-template-columns:1fr 1fr}
+  .row button{flex:1}
+
+  input[type=text],input[type=number]{width:100%;padding:8px 10px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;font-family:inherit}
+  label.f{display:block;font-size:12px;color:var(--muted);margin:10px 0 5px}
+  label.chk{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);
+            margin-top:10px;cursor:pointer;line-height:1.4}
+  label.chk input{width:15px;height:15px;flex:none;cursor:pointer;accent-color:var(--accent)}
+
+  .hint{font-size:12px;color:var(--muted);background:var(--panel2);border:1px solid var(--line);
+        border-radius:9px;padding:9px 11px;margin-top:11px;line-height:1.6}
+  .hint.warn{background:#2b2413;border-color:#5a4718;color:#ffcf82}
+  .hint.err{background:#2a1720;border-color:#4a2530;color:#ff9a9a}
+  .empty{color:var(--muted);font-size:12.5px;padding:8px 2px;line-height:1.6}
+
+  /* ── список классов ───────────────────────────────────────────────── */
+  .cls{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:9px 11px;
+       margin-bottom:8px;cursor:pointer;transition:.15s}
+  .cls:hover{border-color:#3d4c5e}
+  .cls.act{border-color:var(--accent);background:#182635}
+  .cls .n{font-size:13.5px;font-weight:650;display:flex;align-items:center;gap:7px}
+  .cls .n i{width:9px;height:9px;border-radius:3px;flex:none;font-style:normal}
+  .cls .c{font-size:11.5px;color:var(--muted);margin-top:5px}
+  .bar{height:4px;border-radius:3px;background:#0f151d;margin-top:6px;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--ok);width:0;transition:width .2s}
+
+  /* ── кадр ─────────────────────────────────────────────────────────── */
+  .stagebox{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--panel);
+            border:1px solid var(--line);border-radius:14px;padding:12px;overflow:hidden}
+  .stagehead{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);
+             margin-bottom:10px;flex:none;flex-wrap:wrap}
+  .stagehead b{color:var(--text);font-size:13px}
+  .stagehead .sp{margin-left:auto}
+  #stage{flex:1;min-height:0;position:relative;background:#000;border-radius:11px;
+         display:flex;align-items:center;justify-content:center;overflow:hidden}
+  #cv{display:block;cursor:crosshair;touch-action:none}
+  #ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+      color:var(--muted);font-size:14px;text-align:center;padding:30px;line-height:1.7}
+  #draft{position:absolute;left:10px;right:10px;top:10px;display:none;align-items:center;gap:10px;
+         background:#2b2413ee;border:1px solid #5a4718;color:#ffcf82;border-radius:10px;
+         padding:8px 11px;font-size:12.5px;line-height:1.5}
+  #draft button{padding:6px 11px;font-size:12px;margin-left:auto;flex:none}
+
+  /* прогресс и лента миниатюр */
+  .strip{flex:none;padding:10px 14px 12px;border-top:1px solid var(--line);background:#111823}
+  .prog{display:flex;align-items:center;gap:11px;font-size:12px;color:var(--muted);margin-bottom:9px}
+  .prog .bar{flex:1;height:7px;margin:0}
+  .prog b{color:var(--text);font-variant-numeric:tabular-nums}
+  .film{display:flex;gap:6px;overflow-x:auto;overflow-y:hidden;padding-bottom:5px;scrollbar-width:thin}
+  .th{width:78px;height:56px;flex:none;border-radius:7px;border:2px solid #2b3543;background:#0a0e14
+      no-repeat center/cover;cursor:pointer;position:relative;opacity:.72;transition:.12s}
+  .th:hover{opacity:1}
+  .th.done{border-color:var(--ok)}
+  .th.draft{border-color:var(--warn)}
+  .th.act{opacity:1;border-color:var(--accent);box-shadow:0 0 0 2px #3ea6ff55}
+  .th .i{position:absolute;left:0;right:0;bottom:0;background:#000a;font-size:9.5px;color:#cfd9e6;
+         text-align:center;padding:1px 0;border-radius:0 0 4px 4px;font-variant-numeric:tabular-nums}
+
+  /* ── правая колонка ───────────────────────────────────────────────── */
+  .picks{display:flex;flex-direction:column;gap:6px}
+  .pick{display:flex;align-items:center;gap:9px;background:var(--panel2);border:1px solid var(--line);
+        border-radius:9px;padding:7px 10px;cursor:pointer;font-size:13px;transition:.15s}
+  .pick:hover{border-color:#3d4c5e}
+  .pick.act{border-color:var(--accent);background:#182635}
+  .pick i{width:11px;height:11px;border-radius:3px;flex:none;font-style:normal}
+  .pick .k{margin-left:auto;color:var(--muted);font-size:11px;font-family:ui-monospace,Consolas,monospace;
+           border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+
+  .box{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:9px;font-size:12.5px;
+       cursor:pointer;border:1px solid transparent}
+  .box:hover{background:var(--panel2)}
+  .box.act{background:#182635;border-color:var(--accent)}
+  .box i{width:10px;height:10px;border-radius:3px;flex:none;font-style:normal}
+  .box .s{margin-left:auto;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+  .box .x{color:var(--muted);padding:0 3px;font-weight:700}
+  .box .x:hover{color:var(--bad)}
+
+  kbd{display:inline-block;min-width:20px;text-align:center;background:var(--panel2);border:1px solid var(--line);
+      border-bottom-width:2px;border-radius:6px;padding:2px 6px;font-size:11.5px;color:var(--text);
+      font-family:ui-monospace,Consolas,monospace}
+  .keys{display:flex;flex-direction:column;gap:7px;font-size:12.5px;color:var(--muted)}
+  .keys div{display:flex;align-items:center;gap:8px}
+  .keys div span{flex:1}
+
+  #toast{position:fixed;right:18px;bottom:18px;max-width:380px;display:flex;flex-direction:column;
+         gap:8px;z-index:50;pointer-events:none}
+  .ts{background:#1c2531;border:1px solid var(--line);border-left:3px solid var(--accent);
+      border-radius:10px;padding:10px 13px;font-size:13px;line-height:1.55;box-shadow:0 8px 26px #0009;
+      animation:in .18s ease-out}
+  .ts.ok{border-left-color:var(--ok)} .ts.bad{border-left-color:var(--bad)} .ts.warn{border-left-color:var(--warn)}
+  @keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  /* ── узкий экран: одна колонка и обычная прокрутка страницы ──────────── */
+  /* размечать пальцем всё равно неудобно, но посмотреть кадры и прогресс можно */
+  @media(max-width:900px){
+    html,body{height:auto}
+    body{overflow:auto}
+    header{flex-wrap:wrap;padding:10px 12px;gap:10px}
+    header h1{font-size:15px}
+    .badges{margin-left:0;width:100%}
+    .main{grid-template-columns:1fr;padding:10px;gap:10px}
+    .col,.col.center{overflow:visible}
+    .card.grow{flex:none}
+    .stagebox{min-height:58vh}
+    .film{padding-bottom:8px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🏷 Vision · разметка датасета</h1>
+  <div class="badges">
+    <div class="badge">кадров <b id="bFrames">—</b></div>
+    <div class="badge">размечено <b id="bLabeled">—</b></div>
+    <div class="badge" id="bSave">сохранено</div>
+    <a class="back" href="/?desktop=1">← панель</a>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- ЛЕВО · классы -->
+  <div class="col">
+    <div class="card grow">
+      <h2>Классы <span class="r" id="clsCount"></span></h2>
+      <div id="clsList" style="overflow-y:auto"><div class="empty">Загружаю…</div></div>
+      <div class="hint">
+        Кадры снимаются на телефоне: вкладка <b>«🎬 Снимать»</b>, кнопка <b>«● Снимать»</b> —
+        они попадают в папку класса. Здесь их остаётся обвести.
+      </div>
+    </div>
+  </div>
+
+  <!-- ЦЕНТР · кадр -->
+  <div class="col center">
+    <div class="stagebox">
+      <div class="stagehead">
+        <b id="fName">кадр не выбран</b>
+        <span id="fPos"></span>
+        <span class="sp"></span>
+        <button id="bPrev" disabled>← A</button>
+        <button id="bNext" disabled>D →</button>
+      </div>
+      <div id="stage">
+        <canvas id="cv" width="10" height="10"></canvas>
+        <div id="ph">👈 Выбери класс слева — покажу его кадры.<br>
+          Рамка рисуется мышью: нажал, потянул, отпустил.</div>
+        <div id="draft">
+          <span>⚠ Черновик — рамку проставили автоматически (трекер или модель), проверь и поправь.</span>
+          <button id="bOk">Верно</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ПРАВО · инструменты -->
+  <div class="col">
+    <div class="card">
+      <h2>Класс для рамки</h2>
+      <div class="picks" id="picks"><div class="empty">—</div></div>
+      <div class="hint">Цифры <kbd>1</kbd>…<kbd>9</kbd> меняют класс выделенной рамки и класс для следующих новых.</div>
+    </div>
+
+    <div class="card">
+      <h2>Рамки на кадре <span class="r" id="bxCount"></span></h2>
+      <div id="bxList"><div class="empty">Рамок нет. Обведи деталь мышью или нажми <kbd>N</kbd>, если в кадре ничего нет.</div></div>
+      <div class="row grid2" style="margin-top:11px">
+        <button id="bCopy">Копировать <kbd>C</kbd></button>
+        <button id="bNeg">Пустой <kbd>N</kbd></button>
+        <button id="bDel" class="danger">Удалить <kbd>Del</kbd></button>
+        <button id="bSaveBtn" class="primary">Сохранить</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Трекер · черновая разметка</h2>
+      <div class="row" style="align-items:center">
+        <button id="bTrack" style="flex:2">▶ Провести <kbd>T</kbd></button>
+        <input type="number" id="trkCount" value="80" min="1" max="300" step="1" style="flex:1;text-align:center">
+      </div>
+      <label class="chk"><input type="checkbox" id="trkKeep" checked>не трогать уже размеченные</label>
+      <div class="hint">
+        Выделенная рамка ведётся трекером по следующим кадрам класса, но <b>не больше 300 кадров за раз</b>.
+        Это <b>черновик</b>: точное попадание примерно в 7 кадрах из 10, около 50 мс на кадр.
+        После трекера пролистай кадры и поправь — жёлтая полоса покажет непроверенные.
+      </div>
+      <div id="draftLeft" class="hint warn" style="display:none"></div>
+    </div>
+
+    <div class="card">
+      <h2>Модель · черновая разметка</h2>
+      <div class="row"><button id="bPredict" style="flex:1">🤖 Обвести моделью <kbd>M</kbd></button></div>
+      <label class="f" for="prdConf">Уверенность (ниже — находит больше, но чаще мимо)</label>
+      <input type="number" id="prdConf" value="0.12" min="0.05" max="0.5" step="0.01">
+      <label class="chk"><input type="checkbox" id="prdKeep" checked>не трогать уже размеченные</label>
+      <div class="hint">
+        Готовая модель не знает твою деталь по имени, но видит, что на кадре <b>лежит предмет</b>,
+        и обводит его. Класс её ответа не важен — рамка подписывается <b>твоим</b> классом.
+        Это <b>черновик</b>: проверено на живых кадрах — примерно <b>6 рамок из 7</b> ложатся точно,
+        остальные мимо. Где модель ничего не нашла, кадр остаётся неразмеченным — такие надо
+        обвести руками. Работает лучше трекера: трекер накапливает ошибку и уезжает с детали,
+        а модель смотрит каждый кадр заново.
+      </div>
+      <div class="hint" id="prdInfo" style="display:none"></div>
+    </div>
+
+    <div class="card">
+      <h2>Сборка датасета</h2>
+      <label class="f">Доля кадров на проверку (val)</label>
+      <input type="number" id="valRatio" value="0.2" min="0.05" max="0.5" step="0.05">
+      <div class="row" style="margin-top:10px"><button id="bExport" class="primary">📦 Собрать датасет</button></div>
+      <div class="hint" id="expInfo">
+        Берутся только размеченные кадры (пустые тоже — они учат модель не выдумывать).
+        Раскладка train/val устойчивая: повторная сборка не тасует кадры.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Клавиши</h2>
+      <div class="keys">
+        <div><kbd>→</kbd><kbd>D</kbd><span>следующий кадр (сохраняет сам)</span></div>
+        <div><kbd>←</kbd><kbd>A</kbd><span>предыдущий кадр</span></div>
+        <div><kbd>C</kbd><span>скопировать рамки с прошлого кадра</span></div>
+        <div><kbd>N</kbd><span>кадр пустой, деталей нет</span></div>
+        <div><kbd>Del</kbd><kbd>⌫</kbd><span>удалить выделенную рамку</span></div>
+        <div><kbd>1</kbd>…<kbd>9</kbd><span>класс выделенной рамки</span></div>
+        <div><kbd>T</kbd><span>провести рамку трекером вперёд</span></div>
+        <div><kbd>M</kbd><span>обвести кадры готовой моделью</span></div>
+        <div><kbd>Esc</kbd><span>снять выделение</span></div>
+        <div><kbd>Ctrl</kbd><kbd>Z</kbd><span>отменить на этом кадре</span></div>
+        <div><kbd>Ctrl</kbd><kbd>S</kbd><span>сохранить сейчас</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- НИЗ · прогресс и лента миниатюр -->
+<div class="strip">
+  <div class="prog">
+    <span id="progText">кадры не загружены</span>
+    <div class="bar"><i id="progBar"></i></div>
+    <b id="progPct">0%</b>
+  </div>
+  <div class="film" id="film"></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// палитра классов: цвет = индекс класса, тот же и в списке, и на рамке
+const PALETTE = ['#3ea6ff','#37d67a','#ffb020','#ff5c5c','#c58bff','#2ee6d6','#ff8fd0','#9dd649','#ff7847'];
+const color = i => PALETTE[((i|0) % PALETTE.length + PALETTE.length) % PALETTE.length];
+
+const S = {
+  classes: [],        // [{name, frames, labeled}] — из /dataset
+  names:   [],        // порядок классов = индекс cls в разметке
+  cur:     null,      // выбранный класс
+  files:   [],        // имена кадров
+  labeled: new Set(), // какие кадры уже размечены
+  drafts:  new Set(), // какие размечены трекером и ещё не проверены
+  idx:     0,
+  boxes:   [],        // рамки текущего кадра, доли YOLO {cls,x,y,w,h}
+  sel:     -1,        // выделенная рамка
+  dirty:   false,     // есть несохранённые правки
+  pick:    0,         // класс для новых рамок
+  undo:    [],        // история правок в пределах кадра
+  last:    [],        // рамки кадра, с которого ушли — для «C»
+  busy:    false,
+};
+
+let img = new Image();       // меняется на новый объект при каждой загрузке кадра
+const cv  = $('cv'), ctx = cv.getContext('2d');
+let view = {w:10, h:10};     // размер картинки на экране, css-пиксели
+let drag = null;             // текущее перетаскивание мышью
+
+// ── сеть ──────────────────────────────────────────────────────────────────
+async function getJSON(url){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error(await errText(r));
+  return r.json();
+}
+async function postJSON(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                              body: JSON.stringify(body||{})});
+  if(!r.ok) throw new Error(await errText(r));
+  return r.json();
+}
+async function errText(r){
+  // сервер обычно объясняет причину сам («Такого класса нет», «Такого кадра нет») —
+  // показываем его слова, и только если тела нет, говорим общими
+  try{
+    const j = await r.json();
+    const m = j.detail || j.error;
+    if(m) return typeof m === 'string' ? m : JSON.stringify(m);
+  }catch(e){}
+  if(r.status === 404) return 'сервер ещё не умеет этот запрос (404)';
+  return 'ошибка ' + r.status;
+}
+function toast(text, kind){
+  const d = document.createElement('div');
+  d.className = 'ts ' + (kind||'');
+  d.innerHTML = text;
+  $('toast').appendChild(d);
+  setTimeout(()=>{ d.style.transition='opacity .3s'; d.style.opacity=0;
+                   setTimeout(()=>d.remove(), 300); }, kind==='bad' ? 6000 : 3200);
+}
+
+// ── черновики трекера: помним между заходами на страницу ──────────────────
+const draftKey = () => 'vision_drafts_' + S.cur;
+function loadDrafts(){
+  try{ S.drafts = new Set(JSON.parse(localStorage.getItem(draftKey()) || '[]')); }
+  catch(e){ S.drafts = new Set(); }
+}
+function saveDrafts(){
+  try{ localStorage.setItem(draftKey(), JSON.stringify([...S.drafts])); }catch(e){}
+}
+
+// ── классы ────────────────────────────────────────────────────────────────
+async function loadClasses(){
+  let d;
+  try{ d = await getJSON('/dataset'); }
+  catch(e){ $('clsList').innerHTML = `<div class="hint err">Не читается список классов: ${e.message}</div>`; return; }
+
+  S.classes = d.classes || [];
+  $('bFrames').textContent  = d.total_frames  ?? S.classes.reduce((a,c)=>a+(c.frames||0),0);
+  $('bLabeled').textContent = d.total_labeled ?? S.classes.reduce((a,c)=>a+(c.labeled||0),0);
+  $('clsCount').textContent = S.classes.length ? S.classes.length + ' шт' : '';
+
+  // порядок классов в разметке берём из отдельного запроса — он и есть истина
+  try{ S.names = (await getJSON('/dataset/classes')).classes || []; }
+  catch(e){ S.names = S.classes.map(c=>c.name).sort(); }
+
+  drawClasses();
+  drawPicks();
+  if(!S.classes.length){
+    $('clsList').innerHTML = '<div class="empty">Пусто. Наснимай кадры на телефоне — ' +
+                             'вкладка «🎬 Снимать», кнопка «● Снимать».</div>';
+  }else if(!S.cur){
+    selectClass(S.classes[0].name);
+  }
+}
+
+function drawClasses(){
+  $('clsList').innerHTML = S.classes.map(c=>{
+    const pct = c.frames ? Math.round(100*(c.labeled||0)/c.frames) : 0;
+    const ci  = S.names.indexOf(c.name);
+    return `<div class="cls ${c.name===S.cur?'act':''}" data-n="${c.name}">
+      <div class="n"><i style="background:${color(ci<0?0:ci)}"></i>${c.name}</div>
+      <div class="c">размечено ${c.labeled||0} из ${c.frames||0}</div>
+      <div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join('');
+  [...$('clsList').querySelectorAll('.cls')].forEach(el=>{
+    el.onclick = () => selectClass(el.dataset.n);
+  });
+}
+
+function drawPicks(){
+  $('picks').innerHTML = S.names.length
+    ? S.names.map((n,i)=>`<div class="pick ${i===S.pick?'act':''}" data-i="${i}">
+        <i style="background:${color(i)}"></i>${n}${i<9?`<span class="k">${i+1}</span>`:''}</div>`).join('')
+    : '<div class="empty">Классов ещё нет</div>';
+  [...$('picks').querySelectorAll('.pick')].forEach(el=>{
+    el.onclick = () => setPick(+el.dataset.i);
+  });
+}
+
+function setPick(i){
+  if(i < 0 || i >= S.names.length) return;
+  S.pick = i;
+  if(S.sel >= 0 && S.boxes[S.sel] && S.boxes[S.sel].cls !== i){
+    pushUndo(); S.boxes[S.sel].cls = i; markDirty();
+  }
+  drawPicks(); drawBoxList(); draw();
+}
+
+// ── кадры выбранного класса ───────────────────────────────────────────────
+async function selectClass(name){
+  if(S.busy || navRun) return;             // не мешаем идущему переходу по кадрам
+  // внутри три ожидания подряд — пока идёт переключение, второй клик по классу
+  // не должен влезть: иначе кадр останется от старого класса, а рамки уже от нового
+  S.busy = true;
+  try{
+    await saveIfDirty();
+    S.cur = name; S.idx = 0; S.boxes = []; S.sel = -1; S.dirty = false; S.undo = []; S.last = [];
+    const ci = S.names.indexOf(name);
+    S.pick = ci < 0 ? 0 : ci;                 // логично начинать с класса самой папки
+    loadDrafts();
+    drawClasses(); drawPicks();
+    try{
+      const d = await getJSON('/dataset/frames?name=' + encodeURIComponent(name));
+      S.files = d.files || [];
+      S.labeled = new Set(d.labeled || []);
+    }catch(e){
+      S.files = []; S.labeled = new Set();
+      toast('Не читается список кадров: ' + e.message, 'bad');
+    }
+    // черновик имеет смысл только для существующих кадров
+    S.drafts = new Set([...S.drafts].filter(f=>S.files.includes(f)));
+    saveDrafts();
+    buildFilm();
+    if(S.files.length) await loadFrame();
+    else{ $('ph').style.display='flex'; $('ph').textContent='В этом классе нет кадров.'; drawAll(); }
+  }finally{ S.busy = false; }
+}
+
+function imgUrl(file){
+  return '/dataset/image?name=' + encodeURIComponent(S.cur) + '&file=' + encodeURIComponent(file);
+}
+const curFile = () => S.files[S.idx];
+
+// Номер запроса кадра. Пока грузится один кадр, могут попросить следующий —
+// тогда старый ответ молча выбрасываем, чтобы он не затёр уже новые рамки.
+let frameGen = 0;
+
+async function loadFrame(){
+  const file = curFile();
+  if(!file) return;
+  const gen = ++frameGen;
+  S.boxes = []; S.sel = -1; S.dirty = false; S.undo = [];
+  try{
+    const d = await getJSON('/dataset/label?name=' + encodeURIComponent(S.cur) +
+                            '&file=' + encodeURIComponent(file));
+    if(gen !== frameGen) return;             // пока читали разметку, ушли на другой кадр
+    S.boxes = (d.boxes || []).map(b=>({cls:b.cls|0, x:+b.x, y:+b.y, w:+b.w, h:+b.h}));
+  }catch(e){ if(gen !== frameGen) return; /* разметки может не быть — это нормально */ }
+
+  const url = imgUrl(file);
+  if(img.getAttribute('src') !== url || !img.complete || !img.naturalWidth){
+    // свой объект картинки на каждый запрос: общий перетирал бы собственный onload,
+    // и обещание первого вызова не разрешилось бы никогда
+    const next = new Image();
+    const ok = await new Promise(res=>{
+      next.onload  = ()=>res(true);
+      next.onerror = ()=>res(false);
+      next.src = url;
+    });
+    if(gen !== frameGen) return;             // запрос устарел — результат не нужен
+    img = next;
+    if(!ok) toast('Кадр не открылся: ' + file, 'bad');
+  }
+  $('ph').style.display = 'none';
+  layout();
+  drawAll();
+  scrollFilmToCurrent();
+}
+
+// Переход между кадрами: сначала сохранить, потом грузить.
+// Пока идёт сохранение, клавишу могут нажать ещё раз — такие нажатия
+// складываем в цель, иначе на медленном сохранении часть из них пропадёт.
+let navTo = null, navRun = false;
+function step(d){ goto((navTo === null ? S.idx : navTo) + d); }
+async function goto(i){
+  if(S.busy || !S.files.length) return;
+  navTo = Math.max(0, Math.min(S.files.length - 1, i));
+  if(navRun) return;                       // текущий переход подхватит новую цель сам
+  navRun = true;
+  try{
+    // navTo держим до конца перехода: пока грузится кадр, нажатия
+    // отсчитываются от него, а не от ещё не сменившегося S.idx
+    while(navTo !== null && navTo !== S.idx){
+      const t = navTo;
+      await leaveFrame();
+      S.idx = t;
+      await loadFrame();
+    }
+  }finally{ navRun = false; navTo = null; }
+}
+async function leaveFrame(){
+  S.last = S.boxes.map(b=>({...b}));       // пригодится для «C»
+  await saveIfDirty();
+  const f = curFile();
+  if(f && S.drafts.has(f)){                // кадр показали — значит, проверили
+    S.drafts.delete(f); saveDrafts(); updateDraftLeft(); markThumb(S.idx);
+  }
+}
+
+// ── сохранение ────────────────────────────────────────────────────────────
+function markDirty(){ S.dirty = true; $('bSave').innerHTML = '<b style="color:var(--warn)">не сохранено</b>'; }
+function markClean(){ S.dirty = false; $('bSave').innerHTML = 'сохранено'; }
+
+async function saveIfDirty(){
+  if(!S.dirty || !S.cur || !curFile()) return;
+  return saveNow();
+}
+async function saveNow(){
+  const file = curFile();
+  if(!S.cur || !file) return;
+  const boxes = S.boxes.map(b=>({cls:b.cls|0,
+    x:+b.x.toFixed(6), y:+b.y.toFixed(6), w:+b.w.toFixed(6), h:+b.h.toFixed(6)}));
+  try{
+    await postJSON('/dataset/label', {name:S.cur, file, boxes});
+    markClean();
+    if(!S.labeled.has(file)){
+      S.labeled.add(file);
+      const c = S.classes.find(c=>c.name===S.cur);
+      if(c){ c.labeled = (c.labeled||0) + 1; drawClasses(); }
+      $('bLabeled').textContent = (+$('bLabeled').textContent || 0) + 1;
+    }
+    if(S.drafts.has(file)){ S.drafts.delete(file); saveDrafts(); updateDraftLeft(); }
+    markThumb(S.idx); drawProgress();
+  }catch(e){
+    toast('Не сохранилось: ' + e.message, 'bad');
+  }
+}
+
+// ── работа с рамками ──────────────────────────────────────────────────────
+function pushUndo(){
+  S.undo.push(JSON.stringify(S.boxes));
+  if(S.undo.length > 40) S.undo.shift();
+}
+function undo(){
+  if(!S.undo.length) return;
+  S.boxes = JSON.parse(S.undo.pop());
+  S.sel = Math.min(S.sel, S.boxes.length - 1);
+  markDirty(); drawAll();
+}
+function delSel(){
+  if(S.sel < 0) return;
+  pushUndo();
+  S.boxes.splice(S.sel, 1);
+  S.sel = -1;
+  markDirty(); drawAll();
+}
+function copyPrev(){
+  // берём разметку прошлого кадра, а если её нет — рамки, с которых только что ушли
+  const prev = S.files[S.idx - 1];
+  const use = src => {
+    pushUndo();
+    S.boxes = src.map(b=>({...b}));
+    S.sel = S.boxes.length ? 0 : -1;
+    markDirty(); drawAll();
+    toast(`Скопировано рамок: <b>${S.boxes.length}</b>`, 'ok');
+  };
+  if(prev && S.labeled.has(prev)){
+    getJSON('/dataset/label?name=' + encodeURIComponent(S.cur) + '&file=' + encodeURIComponent(prev))
+      .then(d=>use((d.boxes||[]).map(b=>({cls:b.cls|0,x:+b.x,y:+b.y,w:+b.w,h:+b.h}))))
+      .catch(()=>use(S.last));
+  }else use(S.last);
+}
+function markNegative(){
+  if(!curFile()) return;
+  pushUndo();
+  S.boxes = []; S.sel = -1;
+  markDirty(); drawAll();
+  saveNow();
+  toast('Кадр отмечен пустым — деталей в нём нет', 'ok');
+}
+
+// ── трекер ────────────────────────────────────────────────────────────────
+async function runTracker(){
+  if(!S.cur || !curFile()) return;
+  if(!S.boxes.length){ toast('Сначала обведи деталь — трекер поведёт эту рамку', 'warn'); return; }
+  const b = S.boxes[S.sel >= 0 ? S.sel : 0];
+  // сервер всё равно режет до 300, а дробное число даёт 422 — округляем сами
+  const count = Math.max(1, Math.min(300, Math.round(+$('trkCount').value) || 80));
+  const overwrite = !$('trkKeep').checked;   // по умолчанию поправленное вручную не трогаем
+  await saveIfDirty();
+  S.busy = true; $('bTrack').disabled = true; $('bTrack').textContent = '⏳ веду…';
+  try{
+    const d = await postJSON('/dataset/autolabel', {
+      name:S.cur, from_file:curFile(), count, overwrite,
+      box:{cls:b.cls|0, x:+b.x.toFixed(6), y:+b.y.toFixed(6), w:+b.w.toFixed(6), h:+b.h.toFixed(6)}
+    });
+    const done = d.labeled || [], failed = d.failed || [], skipped = d.skipped || [];
+    done.forEach(f=>{ S.labeled.add(f); S.drafts.add(f); });
+    saveDrafts();
+    const c = S.classes.find(c=>c.name===S.cur);
+    if(c) c.labeled = S.labeled.size;
+    drawClasses(); drawProgress();
+    S.files.forEach((f,i)=>markThumb(i));
+    updateDraftLeft();
+    toast(`Трекер прошёл <b>${done.length}</b> кадров${failed.length ? ', потерял ' + failed.length : ''}` +
+          `${skipped.length ? ', обошёл уже размеченных ' + skipped.length : ''}.<br>` +
+          'Это <b>черновик</b>: попадание примерно в 7 кадрах из 10 — пролистай их клавишей ' +
+          '<kbd>D</kbd> и поправь, где съехало.', 'warn');
+    loadClasses();                           // счётчик «размечено» в шапке считает сервер
+  }catch(e){
+    toast('Трекер не отработал: ' + e.message, 'bad');
+  }finally{
+    S.busy = false; $('bTrack').disabled = false; $('bTrack').innerHTML = '▶ Провести <kbd>T</kbd>';
+  }
+}
+function updateDraftLeft(){
+  const n = S.drafts.size;
+  const el = $('draftLeft');
+  el.style.display = n ? 'block' : 'none';
+  el.innerHTML = `Черновых кадров осталось проверить: <b>${n}</b>. ` +
+                 'Отметка снимается, когда кадр показан и ты ушёл с него дальше.';
+  $('draft').style.display = (curFile() && S.drafts.has(curFile())) ? 'flex' : 'none';
+}
+
+// ── черновая разметка готовой моделью ─────────────────────────────────────
+// За один заход модель смотрит не больше PREDICT_LIMIT кадров: ответ приходит
+// за разумное время, а остаток добирается повторным нажатием.
+const PREDICT_LIMIT = 150;
+
+// Перечитать кадры текущего класса: после работы модели истина о том,
+// что размечено, у сервера. Возвращает true, если сам список кадров изменился.
+async function refreshFrames(){
+  if(!S.cur) return false;
+  let d;
+  try{ d = await getJSON('/dataset/frames?name=' + encodeURIComponent(S.cur)); }
+  catch(e){ return false; }              // не критично: счётчики поправятся при следующем заходе
+  const files = d.files || [];
+  const same = files.length === S.files.length && files.every((f,i)=>f === S.files[i]);
+  S.files   = files;
+  S.labeled = new Set(d.labeled || []);
+  S.drafts  = new Set([...S.drafts].filter(f=>S.labeled.has(f)));   // черновик без разметки не бывает
+  saveDrafts();
+  if(same) S.files.forEach((f,i)=>markThumb(i));
+  else{
+    S.idx = Math.max(0, Math.min(S.idx, S.files.length - 1));       // кадров могло стать меньше
+    buildFilm();
+  }
+  drawProgress();
+  return !same;
+}
+
+async function runPredict(){
+  if(S.busy || navRun) return;             // не мешаем переходу по кадрам и трекеру
+  if(!S.cur){ toast('Сначала выбери класс слева', 'warn'); return; }
+  if(!S.files.length){ toast('В этом классе нет кадров', 'warn'); return; }
+  // поле могли очистить или вписать что угодно — держим в тех же пределах, что и сервер
+  const conf = Math.max(0.05, Math.min(0.5, +$('prdConf').value || 0.12));
+  $('prdConf').value = conf;                 // показываем, с чем на самом деле пошли
+  const overwrite = !$('prdKeep').checked;   // по умолчанию размеченное руками не трогаем
+  const btn = $('bPredict');
+  // занято ставим до первого ожидания: иначе второе нажатие успеет влезть
+  S.busy = true; btn.disabled = true; btn.textContent = '⏳ смотрю кадры…';
+  try{
+    await saveIfDirty();
+    const d = await postJSON('/dataset/predict',
+                             {name:S.cur, conf, overwrite, limit:PREDICT_LIMIT});
+
+    const done = d.labeled || [], empty = d.empty || [];
+    const left = Number.isFinite(+d.left) ? +d.left : null;
+    // рамки от модели — такой же черновик, как от трекера: жёлтые в ленте
+    done.forEach(f=>{ S.labeled.add(f); S.drafts.add(f); });
+    saveDrafts();
+
+    const changed = await refreshFrames();
+    const c = S.classes.find(c=>c.name===S.cur);
+    if(c) c.labeled = S.labeled.size;
+    drawClasses(); drawProgress(); updateDraftLeft();
+    // если модель обвела кадр, который сейчас на экране, показываем рамку сразу
+    if(S.files.length && (changed || done.includes(curFile()))) await loadFrame();
+
+    const more = left === null ? 0 : Math.max(0, left - empty.length);
+    $('prdInfo').className = 'hint';
+    $('prdInfo').style.display = 'block';
+    $('prdInfo').innerHTML =
+      `Обведено кадров: <b>${done.length}</b>.<br>` +
+      `Модель ничего не нашла на <b>${empty.length}</b> — эти кадры обводим руками.<br>` +
+      (left === null ? '' : `Всего без разметки осталось: <b>${left}</b>.<br>`) +
+      (more ? `Из них <b>${more}</b> модель ещё не смотрела — нажми кнопку ещё раз.<br>` : '') +
+      `Модель: <b>${d.model || '—'}</b>${d.device ? ' · считает ' + d.device : ''}.`;
+
+    if(done.length)
+      toast(`Модель обвела <b>${done.length}</b> кадров` +
+            (empty.length ? `, на <b>${empty.length}</b> ничего не нашла` : '') + '.<br>' +
+            'Это <b>черновик</b>: пролистай их клавишей <kbd>D</kbd> и поправь, где мимо.', 'warn');
+    else
+      toast('Модель не нашла деталь ни на одном кадре. Уменьши уверенность ' +
+            'или обведи кадры руками.', 'warn');
+
+    loadClasses();                           // счётчики в шапке считает сервер
+  }catch(e){
+    $('prdInfo').className = 'hint err';
+    $('prdInfo').style.display = 'block';
+    $('prdInfo').textContent = '⚠ Не получилось: ' + e.message;
+    toast('Модель не отработала: ' + e.message, 'bad');
+  }finally{
+    S.busy = false; btn.disabled = false; btn.innerHTML = '🤖 Обвести моделью <kbd>M</kbd>';
+  }
+}
+
+// ── отрисовка холста ──────────────────────────────────────────────────────
+function layout(){
+  if(!img.naturalWidth) return;
+  const box = $('stage').getBoundingClientRect();
+  const s = Math.min(box.width / img.naturalWidth, box.height / img.naturalHeight);
+  const w = Math.max(40, Math.floor(img.naturalWidth * s));
+  const h = Math.max(40, Math.floor(img.naturalHeight * s));
+  const dpr = window.devicePixelRatio || 1;
+  cv.style.width = w + 'px'; cv.style.height = h + 'px';
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  view = {w, h};
+}
+const toPx = b => ({x:(b.x - b.w/2)*view.w, y:(b.y - b.h/2)*view.h, w:b.w*view.w, h:b.h*view.h});
+
+function draw(){
+  if(!view.w) return;
+  ctx.clearRect(0, 0, view.w, view.h);
+  if(img.naturalWidth) ctx.drawImage(img, 0, 0, view.w, view.h);
+
+  S.boxes.forEach((b, i)=>{
+    const p = toPx(b), c = color(b.cls), on = (i === S.sel);
+    ctx.lineWidth = on ? 3 : 2;
+    ctx.strokeStyle = c;
+    if(on){ ctx.fillStyle = c + '22'; ctx.fillRect(p.x, p.y, p.w, p.h); }
+    ctx.strokeRect(p.x, p.y, p.w, p.h);
+
+    const name = S.names[b.cls] || ('класс ' + b.cls);
+    ctx.font = '600 12px "Segoe UI",system-ui,sans-serif';
+    const tw = ctx.measureText(name).width + 10;
+    const ty = p.y > 18 ? p.y - 17 : p.y + 1;
+    ctx.fillStyle = c;
+    ctx.fillRect(p.x, ty, tw, 16);
+    ctx.fillStyle = '#04121f';
+    ctx.fillText(name, p.x + 5, ty + 12);
+
+    if(on){                                   // уголки для растягивания
+      ctx.fillStyle = '#fff';
+      corners(p).forEach(k=>ctx.fillRect(k.x - 4, k.y - 4, 8, 8));
+    }
+  });
+
+  if(drag && drag.mode === 'new'){            // рамка, которую тянут прямо сейчас
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 2; ctx.strokeStyle = color(S.pick);
+    ctx.strokeRect(Math.min(drag.sx, drag.cx), Math.min(drag.sy, drag.cy),
+                   Math.abs(drag.cx - drag.sx), Math.abs(drag.cy - drag.sy));
+    ctx.setLineDash([]);
+  }
+}
+const corners = p => [{x:p.x,y:p.y},{x:p.x+p.w,y:p.y},{x:p.x,y:p.y+p.h},{x:p.x+p.w,y:p.y+p.h}];
+
+function drawAll(){ draw(); drawBoxList(); drawHead(); updateDraftLeft(); drawProgress(); }
+
+function drawHead(){
+  const f = curFile();
+  $('fName').textContent = f || 'кадр не выбран';
+  $('fPos').textContent  = S.files.length ? `${S.idx + 1} из ${S.files.length}` : '';
+  $('bPrev').disabled = !S.files.length || S.idx === 0;
+  $('bNext').disabled = !S.files.length || S.idx >= S.files.length - 1;
+}
+
+function drawBoxList(){
+  $('bxCount').textContent = S.boxes.length ? S.boxes.length + ' шт' : '';
+  if(!S.boxes.length){
+    $('bxList').innerHTML = '<div class="empty">Рамок нет. Обведи деталь мышью или нажми ' +
+                            '<kbd>N</kbd>, если в кадре ничего нет.</div>';
+    return;
+  }
+  $('bxList').innerHTML = S.boxes.map((b,i)=>`
+    <div class="box ${i===S.sel?'act':''}" data-i="${i}">
+      <i style="background:${color(b.cls)}"></i>
+      <span>${S.names[b.cls] || ('класс ' + b.cls)}</span>
+      <span class="s">${Math.round(b.w*100)}×${Math.round(b.h*100)}%</span>
+      <span class="x" data-del="${i}">✕</span>
+    </div>`).join('');
+  [...$('bxList').querySelectorAll('.box')].forEach(el=>{
+    el.onclick = e => {
+      if(e.target.dataset.del !== undefined){ S.sel = +e.target.dataset.del; delSel(); return; }
+      S.sel = +el.dataset.i; S.pick = S.boxes[S.sel].cls; drawPicks(); drawAll();
+    };
+  });
+}
+
+function drawProgress(){
+  const t = S.files.length, d = S.labeled.size;
+  const pct = t ? Math.round(100 * d / t) : 0;
+  $('progText').innerHTML = S.cur
+    ? `<b>${S.cur}</b> · размечено <b>${d}</b> из <b>${t}</b>` : 'кадры не загружены';
+  $('progBar').style.width = pct + '%';
+  $('progPct').textContent = pct + '%';
+}
+
+// ── лента миниатюр ────────────────────────────────────────────────────────
+let thumbs = [], io = null;
+function buildFilm(){
+  const film = $('film');
+  film.innerHTML = ''; thumbs = [];
+  if(io) io.disconnect();
+  io = new IntersectionObserver(es=>{
+    es.forEach(e=>{
+      if(e.isIntersecting && !e.target.dataset.loaded){
+        e.target.dataset.loaded = 1;
+        e.target.style.backgroundImage = `url("${imgUrl(e.target.dataset.f)}")`;
+      }
+    });
+  }, {root: film, rootMargin: '300px'});
+
+  S.files.forEach((f, i)=>{
+    const d = document.createElement('div');
+    d.className = 'th'; d.dataset.f = f; d.title = f;
+    d.innerHTML = `<span class="i">${i + 1}</span>`;
+    d.onclick = () => goto(i);
+    film.appendChild(d); thumbs.push(d); io.observe(d);
+    markThumb(i);
+  });
+  drawProgress();
+}
+function markThumb(i){
+  const d = thumbs[i]; if(!d) return;
+  const f = S.files[i];
+  d.classList.toggle('done',  S.labeled.has(f) && !S.drafts.has(f));
+  d.classList.toggle('draft', S.drafts.has(f));
+  d.classList.toggle('act',   i === S.idx);
+}
+function scrollFilmToCurrent(){
+  thumbs.forEach((d,i)=>d.classList.toggle('act', i === S.idx));
+  const d = thumbs[S.idx];
+  if(d) d.scrollIntoView({inline:'center', block:'nearest'});
+}
+
+// ── мышь ──────────────────────────────────────────────────────────────────
+function pos(e){
+  const r = cv.getBoundingClientRect();
+  return {x:e.clientX - r.left, y:e.clientY - r.top};
+}
+function hit(p){
+  // ищем сверху вниз: сначала уголок выделенной рамки, потом любую рамку под курсором
+  if(S.sel >= 0 && S.boxes[S.sel]){
+    const b = toPx(S.boxes[S.sel]);
+    const cs = corners(b);
+    for(let k = 0; k < 4; k++)
+      if(Math.abs(p.x - cs[k].x) < 7 && Math.abs(p.y - cs[k].y) < 7)
+        return {mode:'resize', i:S.sel, k};
+  }
+  for(let i = S.boxes.length - 1; i >= 0; i--){
+    const b = toPx(S.boxes[i]);
+    if(p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h)
+      return {mode:'move', i};
+  }
+  return null;
+}
+cv.onmousedown = e => {
+  if(e.button !== 0 || !img.naturalWidth) return;
+  const p = pos(e), h = hit(p);
+  if(h){
+    pushUndo();
+    S.sel = h.i; S.pick = S.boxes[h.i].cls; drawPicks();
+    const b = toPx(S.boxes[h.i]);
+    if(h.mode === 'move') drag = {mode:'move', i:h.i, dx:p.x - b.x, dy:p.y - b.y, moved:false};
+    else{
+      const cs = corners(b), op = cs[3 - h.k];        // тянем от противоположного угла
+      drag = {mode:'resize', i:h.i, ax:op.x, ay:op.y};
+    }
+  }else{
+    S.sel = -1;
+    drag = {mode:'new', sx:p.x, sy:p.y, cx:p.x, cy:p.y};
+  }
+  drawAll();
+};
+window.onmousemove = e => {
+  if(!drag) return;
+  const p = pos(e);
+  const cx = Math.max(0, Math.min(view.w, p.x)), cy = Math.max(0, Math.min(view.h, p.y));
+  if(drag.mode === 'new'){ drag.cx = cx; drag.cy = cy; }
+  else if(drag.mode === 'move'){
+    const b = S.boxes[drag.i];
+    const w = b.w * view.w, h = b.h * view.h;
+    let x = Math.max(0, Math.min(view.w - w, p.x - drag.dx));
+    let y = Math.max(0, Math.min(view.h - h, p.y - drag.dy));
+    b.x = (x + w/2) / view.w; b.y = (y + h/2) / view.h;
+    drag.moved = true; markDirty();
+  }else{
+    const b = S.boxes[drag.i];
+    const x1 = Math.min(drag.ax, cx), x2 = Math.max(drag.ax, cx);
+    const y1 = Math.min(drag.ay, cy), y2 = Math.max(drag.ay, cy);
+    b.x = (x1 + x2)/2/view.w; b.y = (y1 + y2)/2/view.h;
+    b.w = (x2 - x1)/view.w;   b.h = (y2 - y1)/view.h;
+    markDirty();
+  }
+  draw();
+};
+window.onmouseup = () => {
+  if(!drag) return;
+  if(drag.mode === 'new'){
+    const x1 = Math.min(drag.sx, drag.cx), x2 = Math.max(drag.sx, drag.cx);
+    const y1 = Math.min(drag.sy, drag.cy), y2 = Math.max(drag.sy, drag.cy);
+    if(x2 - x1 > 5 && y2 - y1 > 5){                 // случайный клик рамкой не считаем
+      pushUndo();
+      S.boxes.push({cls:S.pick, x:(x1+x2)/2/view.w, y:(y1+y2)/2/view.h,
+                    w:(x2-x1)/view.w, h:(y2-y1)/view.h});
+      S.sel = S.boxes.length - 1;
+      markDirty();
+    }
+  }else if(drag.mode === 'resize' || drag.mode === 'move'){
+    const b = S.boxes[drag.i];
+    if(b && (b.w < 0.004 || b.h < 0.004)){ S.boxes.splice(drag.i, 1); S.sel = -1; }
+  }
+  drag = null;
+  drawAll();
+};
+cv.onmousemove = e => {                              // курсор подсказывает, что можно сделать
+  if(drag) return;
+  const h = hit(pos(e));
+  cv.style.cursor = !h ? 'crosshair' : (h.mode === 'move' ? 'move'
+                    : (h.k === 0 || h.k === 3 ? 'nwse-resize' : 'nesw-resize'));
+};
+window.addEventListener('resize', ()=>{ layout(); draw(); });
+// холст подгоняем и когда меняется само окно кадра: страницу могли открыть
+// в фоновой вкладке, где на момент загрузки размеров ещё нет
+if(window.ResizeObserver) new ResizeObserver(()=>{ layout(); draw(); }).observe($('stage'));
+// подстраховка: если вкладка была скрыта, события размера могут не прийти вовсе —
+// раз в секунду сверяем размер окна кадра сами, это почти ничего не стоит
+let lastBox = '';
+setInterval(()=>{
+  const b = $('stage').getBoundingClientRect();
+  const k = Math.round(b.width) + 'x' + Math.round(b.height);
+  if(k !== lastBox){ lastBox = k; layout(); draw(); }
+}, 1000);
+
+// ── клавиши ───────────────────────────────────────────────────────────────
+// работаем по e.code — тогда раскладка (русская или английская) не мешает
+window.addEventListener('keydown', e => {
+  const t = e.target.tagName;
+  if(t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return;
+
+  if(e.ctrlKey && e.code === 'KeyS'){ e.preventDefault(); saveNow(); return; }
+  if(e.ctrlKey && e.code === 'KeyZ'){ e.preventDefault(); undo(); return; }
+  if(e.ctrlKey || e.altKey || e.metaKey) return;
+
+  switch(e.code){
+    case 'ArrowRight': case 'KeyD': e.preventDefault(); step(+1); break;
+    case 'ArrowLeft':  case 'KeyA': e.preventDefault(); step(-1); break;
+    case 'KeyC':       e.preventDefault(); copyPrev(); break;
+    case 'KeyN':       e.preventDefault(); markNegative(); break;
+    case 'KeyT':       e.preventDefault(); runTracker(); break;
+    case 'KeyM':       e.preventDefault(); runPredict(); break;
+    case 'Delete': case 'Backspace': e.preventDefault(); delSel(); break;
+    case 'Escape':     S.sel = -1; drawAll(); break;
+    default:
+      const m = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+      if(m){ e.preventDefault(); setPick(+m[1] - 1); }
+  }
+});
+
+// ── кнопки ────────────────────────────────────────────────────────────────
+$('bPrev').onclick = () => step(-1);
+$('bNext').onclick = () => step(+1);
+$('bCopy').onclick = copyPrev;
+$('bNeg').onclick  = markNegative;
+$('bDel').onclick  = delSel;
+$('bSaveBtn').onclick = saveNow;
+$('bTrack').onclick   = runTracker;
+$('bPredict').onclick = runPredict;
+$('bOk').onclick = () => {
+  const f = curFile();
+  if(f){ S.drafts.delete(f); saveDrafts(); updateDraftLeft(); markThumb(S.idx); }
+};
+
+$('bExport').onclick = async () => {
+  await saveIfDirty();
+  const r = Math.max(0.05, Math.min(0.5, +$('valRatio').value || 0.2));
+  $('bExport').disabled = true; $('bExport').textContent = '⏳ собираю…';
+  try{
+    const d = await postJSON('/dataset/export', {val_ratio:r});
+    $('expInfo').className = 'hint';
+    $('expInfo').innerHTML =
+      `Готово: <b>${d.train}</b> кадров на обучение, <b>${d.val}</b> на проверку.<br>` +
+      `Классы: <b>${(d.classes||[]).join(', ')}</b>.<br>` +
+      'Файлы легли в <b>dataset/images</b>, <b>dataset/labels</b> и <b>dataset/data.yaml</b> — ' +
+      'можно запускать обучение.';
+    toast(`Датасет собран: <b>${d.train}</b> + <b>${d.val}</b> кадров`, 'ok');
+    loadClasses();
+  }catch(e){
+    $('expInfo').className = 'hint err';
+    $('expInfo').textContent = '⚠ Не собралось: ' + e.message;
+    toast('Не собралось: ' + e.message, 'bad');
+  }finally{
+    $('bExport').disabled = false; $('bExport').textContent = '📦 Собрать датасет';
+  }
+};
+
+window.addEventListener('beforeunload', e => {
+  if(S.dirty){ e.preventDefault(); e.returnValue = ''; }
+});
+
+loadClasses();
+</script>
+</body>
+</html>

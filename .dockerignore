@@ -1,0 +1,12 @@
+# .venv весит несколько гигабайт — без этого файла docker потащил бы его в сборку
+.venv/
+runs/
+dataset/
+certs/
+models/
+__pycache__/
+*.pyc
+*.log
+README.md
+open-ports.ps1
+capture.py

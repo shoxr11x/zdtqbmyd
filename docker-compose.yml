@@ -1,0 +1,30 @@
+services:
+  vision:
+    build: .
+    image: vision-yolo
+    container_name: vision
+    restart: unless-stopped
+
+    ports:
+      - "8004:8004"    # http  — открыть на компьютере
+      - "8443:8443"    # https — открыть на телефоне
+
+    environment:
+      # Настоящий адрес компьютера в сети. Контейнер своего не знает — у него
+      # внутренний 172.x.x.x, телефону он бесполезен. Отсюда берётся и адрес
+      # в подсказке, и адрес внутри сертификата. Меняется в файле .env
+      HOST_IP: ${HOST_IP}
+
+    volumes:
+      - ./models:/app/models     # обученные модели — переживают пересборку
+      - ./certs:/app/certs       # сертификат выписывается один раз
+      - ./dataset:/app/dataset   # датасет для обучения
+
+    # проброс видеокарты внутрь контейнера
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Vision · разметка пальцем</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161d27; --line:#28323f; --text:#e8eef5; --muted:#8b9bb0;
+    --accent:#3ea6ff; --ok:#37d67a; --warn:#ffb020; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-user-select:none; user-select:none}
+  html,body{height:100%; margin:0; overscroll-behavior:none}
+  body{
+    background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI",system-ui,sans-serif;
+    display:flex; flex-direction:column; overflow:hidden;
+    padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+
+  header{
+    display:flex; align-items:center; gap:10px; padding:10px 14px; flex:none;
+    border-bottom:1px solid var(--line); background:#131a24;
+  }
+  header a{color:var(--muted); text-decoration:none; font-size:20px; flex:none}
+  header .ttl{font-size:14px; font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  header .prg{margin-left:auto; font-size:11.5px; color:var(--muted); text-align:right; flex:none}
+  header .prg b{color:var(--text)}
+  header .ico{
+    flex:none; width:38px; padding:8px 0; margin-left:2px; font-size:16px;
+    background:transparent; border-color:transparent; color:var(--muted);
+  }
+
+  /* Режим «во весь экран»: прячем всё лишнее, чтобы кадр был крупным.
+     На разметке это важнее любых кнопок — рамку надо ставить точно. */
+  body.zen .picker,
+  body.zen .strip,
+  body.zen #rowExtra{display:none}
+  body.zen header{padding:6px 12px}
+  body.zen footer{padding:8px 12px 10px}
+
+  /* выбор класса */
+  .picker{flex:none; display:flex; gap:7px; padding:6px 12px; overflow-x:auto; background:#131a24;
+          border-bottom:1px solid var(--line); -webkit-overflow-scrolling:touch}
+  .picker button{
+    flex:none; padding:7px 13px; border-radius:18px; border:1px solid var(--line);
+    background:#1c2531; color:var(--text); font-size:13px; font-weight:600; font-family:inherit;
+  }
+  .picker button.on{background:var(--accent); color:#04121f; border-color:var(--accent)}
+
+  /* кадр и рамка */
+  #stage{flex:1; position:relative; background:#000; min-height:0; touch-action:none; overflow:hidden}
+  #shot{position:absolute; inset:0; width:100%; height:100%; object-fit:contain; pointer-events:none}
+  #dim{position:absolute; inset:0; pointer-events:none}
+  #crop{
+    position:absolute; border:2px solid var(--accent); box-shadow:0 0 0 9999px rgba(0,0,0,.45);
+    display:none;
+  }
+  /* тонкие направляющие внутри рамки — как в обрезке фото */
+  #crop::before,#crop::after{
+    content:''; position:absolute; background:rgba(255,255,255,.28);
+  }
+  #crop::before{left:33.3%; right:33.3%; top:0; bottom:0; border-left:1px solid rgba(255,255,255,.28);
+                border-right:1px solid rgba(255,255,255,.28); background:none}
+  #crop::after{top:33.3%; bottom:33.3%; left:0; right:0; border-top:1px solid rgba(255,255,255,.28);
+               border-bottom:1px solid rgba(255,255,255,.28); background:none}
+  .h{
+    position:absolute; width:44px; height:44px; touch-action:none;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .h i{display:block; width:22px; height:22px; border:3px solid var(--accent); border-radius:3px}
+  .h.tl{left:-22px; top:-22px}   .h.tl i{border-right:0; border-bottom:0}
+  .h.tr{right:-22px; top:-22px}  .h.tr i{border-left:0; border-bottom:0}
+  .h.bl{left:-22px; bottom:-22px} .h.bl i{border-right:0; border-top:0}
+  .h.br{right:-22px; bottom:-22px} .h.br i{border-left:0; border-top:0}
+
+  #hint{
+    position:absolute; left:0; right:0; bottom:12px; text-align:center; font-size:12.5px;
+    color:#cfe0f0; text-shadow:0 1px 4px #000; pointer-events:none;
+  }
+  #busy{
+    position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(6,10,16,.6); font-size:14px; color:var(--muted);
+  }
+
+  /* лента миниатюр */
+  .strip{flex:none; display:flex; gap:5px; padding:6px 12px; overflow-x:auto; background:#101720;
+         border-top:1px solid var(--line); -webkit-overflow-scrolling:touch}
+  .strip img{width:42px; height:42px; object-fit:cover; border-radius:7px; border:2px solid #2a3644; flex:none}
+  .strip img.done{border-color:var(--ok)}
+  .strip img.cur{border-color:var(--accent)}
+
+  footer{flex:none; padding:8px 12px 10px; background:#131a24; border-top:1px solid var(--line)}
+  .row{display:flex; gap:7px}
+  .row + .row{margin-top:7px}
+  button{
+    flex:1; padding:12px 8px; border-radius:12px; border:1px solid var(--line); background:#1c2531;
+    color:var(--text); font-size:14px; font-weight:650; font-family:inherit;
+  }
+  button.primary{background:var(--accent); color:#04121f; border-color:var(--accent)}
+  button.ghost{background:transparent; color:var(--muted)}
+  button:disabled{opacity:.4}
+  .nav{flex:none; width:64px; font-size:19px}
+
+  /* панель обучения — выезжает снизу, как принято на телефоне */
+  #sheet{
+    position:fixed; inset:0; background:rgba(4,8,13,.72); display:none; z-index:20;
+    align-items:flex-end;
+  }
+  #sheet.on{display:flex}
+  .sheetBox{
+    width:100%; max-height:88vh; background:var(--panel); border-top:1px solid var(--line);
+    border-radius:18px 18px 0 0; display:flex; flex-direction:column;
+    padding-bottom:env(safe-area-inset-bottom);
+  }
+  .sheetHead{
+    display:flex; align-items:center; padding:14px 16px; border-bottom:1px solid var(--line); flex:none;
+  }
+  .sheetHead b{font-size:16px}
+  .sheetHead .x{
+    margin-left:auto; flex:none; width:40px; padding:8px; background:transparent;
+    border-color:transparent; color:var(--muted); font-size:17px;
+  }
+  .sheetBody{padding:14px 16px 18px; overflow-y:auto; display:flex; flex-direction:column; gap:9px}
+  .sheetBody select, .sheetBody input{
+    width:100%; padding:13px 12px; border-radius:11px; background:#1c2531;
+    border:1px solid var(--line); color:var(--text); font-size:15px; font-family:inherit;
+  }
+  .two{display:flex; gap:9px}
+  .two > div{flex:1; min-width:0}
+  .bar{height:10px; background:#1c2531; border:1px solid var(--line); border-radius:6px; overflow:hidden}
+  .bar i{display:block; height:100%; width:0; background:var(--accent); transition:width .4s}
+  .plog{
+    max-height:150px; overflow-y:auto; padding:9px 11px; background:#0b1017;
+    border:1px solid var(--line); border-radius:9px; font-size:11.5px; line-height:1.6;
+    color:var(--muted); white-space:pre-wrap; word-break:break-word; display:none;
+  }
+  .memo{
+    background:#141b25; border:1px solid var(--line); border-radius:11px; padding:10px 12px;
+    font-size:11.5px; color:var(--muted); line-height:1.6;
+  }
+
+  #toast{
+    position:fixed; left:14px; right:14px; bottom:calc(14px + env(safe-area-inset-bottom));
+    background:#1c2531; border:1px solid var(--line); border-radius:11px; padding:11px 14px;
+    font-size:13px; display:none; z-index:9; line-height:1.5;
+  }
+  #toast.bad{background:#2a1720; border-color:#4a2530; color:#ff9a9a}
+</style>
+</head>
+<body>
+
+<header>
+  <a href="/phone">‹</a>
+  <div class="ttl" id="ttl">Разметка</div>
+  <div class="prg" id="prg">—</div>
+  <button class="ico" id="bZen" title="во весь экран">⤢</button>
+  <button class="ico" id="bTrainOpen" title="собрать и обучить">🚀</button>
+</header>
+
+<div class="picker" id="picker"></div>
+
+<div id="stage">
+  <img id="shot" alt="">
+  <div id="crop">
+    <div class="h tl" data-h="tl"><i></i></div>
+    <div class="h tr" data-h="tr"><i></i></div>
+    <div class="h bl" data-h="bl"><i></i></div>
+    <div class="h br" data-h="br"><i></i></div>
+  </div>
+  <div id="hint">тяни за углы — обтяни деталь впритык</div>
+  <div id="busy">загружаю…</div>
+</div>
+
+<div class="strip" id="strip"></div>
+
+<footer>
+  <div class="row">
+    <button class="nav" id="bPrev">‹</button>
+    <button class="primary" id="bNext">Сохранить и дальше ›</button>
+  </div>
+  <div class="row" id="rowExtra">
+    <button id="bSame">Как на прошлом</button>
+    <button id="bEmpty">Детали нет</button>
+    <button class="ghost" id="bAuto">Моделью</button>
+  </div>
+</footer>
+
+<!-- обучение прямо с телефона: раньше за этим приходилось идти к компьютеру -->
+<div id="sheet">
+  <div class="sheetBox">
+    <div class="sheetHead">
+      <b>Обучение</b>
+      <button class="x" id="bSheetClose">✕</button>
+    </div>
+    <div class="sheetBody">
+      <div class="lbl" id="trDs">смотрю, что собрано…</div>
+      <button id="bExport">📦 Собрать датасет</button>
+
+      <div class="lbl">Базовая модель</div>
+      <select id="trBase">
+        <option value="yolo11n.pt" selected>yolo11n.pt — для датасетов до ~300 кадров</option>
+        <option value="yolo11s.pt">yolo11s.pt — от ~300 кадров</option>
+        <option value="yolo11m.pt">yolo11m.pt — от ~1000 кадров</option>
+      </select>
+
+      <div class="two">
+        <div>
+          <div class="lbl">Эпох</div>
+          <input type="number" id="trEpochs" value="60" min="10" max="500" step="10">
+        </div>
+        <div>
+          <div class="lbl">Имя модели</div>
+          <input type="text" id="trName" value="parts" autocapitalize="off" spellcheck="false">
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="primary" id="bTrain">🚀 Обучить</button>
+        <button id="bTrainStop" disabled>■ Стоп</button>
+      </div>
+
+      <div class="bar"><i id="trBar"></i></div>
+      <div class="lbl" id="trState">не запущено</div>
+      <div class="plog" id="trLog"></div>
+      <div class="memo">
+        На время обучения камера останавливается — видеокарта занята целиком.
+        Страницу можно закрыть, обучение не прервётся.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+const S = {
+  cls: null, classes: [], files: [], labeled: new Set(),
+  idx: 0, box: null, prev: null, dirty: false, busy: false, gen: 0,
+};
+
+// ── мелочи ────────────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg, bad){
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = bad ? 'bad' : '';
+  t.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.style.display = 'none', 2600);
+}
+async function errText(r){
+  try{
+    const j = await r.json();
+    const d = j.detail || j.error;
+    if(d) return typeof d === 'string' ? d : JSON.stringify(d);
+  }catch(e){}
+  return 'ошибка ' + r.status;
+}
+const busy = on => { S.busy = on; $('busy').style.display = on ? 'flex' : 'none'; };
+
+// ── где на экране лежит сама картинка ─────────────────────────────────────
+// Кадр вписан в область с полями по краям (object-fit: contain), поэтому
+// экранные координаты и доли кадра не совпадают — считаем поля явно.
+function fit(){
+  const st = $('stage').getBoundingClientRect(), im = $('shot');
+  const iw = im.naturalWidth || 1, ih = im.naturalHeight || 1;
+  const k = Math.min(st.width / iw, st.height / ih);
+  const w = iw * k, h = ih * k;
+  return {x: (st.width - w) / 2, y: (st.height - h) / 2, w, h};
+}
+
+function drawCrop(){
+  const c = $('crop');
+  if(!S.box){ c.style.display = 'none'; return; }
+  const f = fit();
+  const b = S.box;
+  c.style.display = 'block';
+  c.style.left   = (f.x + (b.x - b.w / 2) * f.w) + 'px';
+  c.style.top    = (f.y + (b.y - b.h / 2) * f.h) + 'px';
+  c.style.width  = (b.w * f.w) + 'px';
+  c.style.height = (b.h * f.h) + 'px';
+}
+window.addEventListener('resize', drawCrop);
+
+// ── перетаскивание пальцем ────────────────────────────────────────────────
+// Углы и середина обрабатываются одинаково через pointer-события: так один
+// и тот же код работает и пальцем на телефоне, и мышью на компьютере.
+let drag = null;
+
+function onDown(e, what){
+  if(!S.box) return;
+  e.preventDefault();
+  const f = fit();
+  drag = {what, x: e.clientX, y: e.clientY, box: {...S.box}, f};
+  e.target.setPointerCapture?.(e.pointerId);
+}
+
+function onMove(e){
+  if(!drag || !S.box) return;
+  e.preventDefault();
+  const dx = (e.clientX - drag.x) / drag.f.w;
+  const dy = (e.clientY - drag.y) / drag.f.h;
+  const b = drag.box;
+  let l = b.x - b.w / 2, t = b.y - b.h / 2, r = b.x + b.w / 2, bo = b.y + b.h / 2;
+
+  if(drag.what === 'move'){
+    l += dx; r += dx; t += dy; bo += dy;
+    const w = r - l, h = bo - t;
+    l = Math.max(0, Math.min(1 - w, l)); r = l + w;
+    t = Math.max(0, Math.min(1 - h, t)); bo = t + h;
+  }else{
+    if(drag.what.includes('l')) l = Math.min(r - 0.03, Math.max(0, l + dx));
+    if(drag.what.includes('r')) r = Math.max(l + 0.03, Math.min(1, r + dx));
+    if(drag.what[0] === 't')    t = Math.min(bo - 0.03, Math.max(0, t + dy));
+    if(drag.what[0] === 'b')    bo = Math.max(t + 0.03, Math.min(1, bo + dy));
+  }
+  S.box = {x: (l + r) / 2, y: (t + bo) / 2, w: r - l, h: bo - t};
+  S.dirty = true;
+  drawCrop();
+}
+
+function onUp(){ drag = null; }
+
+$('stage').addEventListener('pointerdown', e => {
+  // нажатие по самой рамке — двигаем её целиком; по углу — тянем угол
+  const h = e.target.closest('.h');
+  onDown(e, h ? h.dataset.h : 'move');
+});
+window.addEventListener('pointermove', onMove, {passive: false});
+window.addEventListener('pointerup', onUp);
+window.addEventListener('pointercancel', onUp);
+
+// ── данные ────────────────────────────────────────────────────────────────
+async function loadClasses(){
+  const d = await (await fetch('/dataset')).json();
+  S.classes = d.classes || [];
+  $('picker').innerHTML = S.classes.length
+    ? S.classes.map(c =>
+        `<button data-c="${c.name}">${c.name} · ${c.labeled}/${c.frames}</button>`).join('')
+    : '<button disabled>Пусто — сначала сними кадры</button>';
+  [...$('picker').querySelectorAll('[data-c]')].forEach(b => {
+    b.classList.toggle('on', b.dataset.c === S.cls);
+    b.onclick = () => selectClass(b.dataset.c);
+  });
+}
+
+async function selectClass(name){
+  if(S.busy) return;
+  busy(true);
+  try{
+    await saveIfDirty();
+    S.cls = name; S.idx = 0; S.prev = null;
+    const d = await (await fetch('/dataset/frames?name=' + encodeURIComponent(name))).json();
+    S.files = d.files || [];
+    S.labeled = new Set(d.labeled || []);
+    $('ttl').textContent = name;
+    [...$('picker').querySelectorAll('[data-c]')].forEach(b =>
+      b.classList.toggle('on', b.dataset.c === name));
+    buildStrip();
+    await loadFrame();
+  }catch(e){ toast('Не удалось открыть класс: ' + e, true); }
+  finally{ busy(false); }
+}
+
+function buildStrip(){
+  $('strip').innerHTML = S.files.map((f, i) =>
+    `<img data-i="${i}" src="/dataset/image?name=${encodeURIComponent(S.cls)}&file=${encodeURIComponent(f)}"
+      class="${S.labeled.has(f) ? 'done' : ''}" loading="lazy">`).join('');
+  [...$('strip').querySelectorAll('img')].forEach(im => {
+    im.onclick = () => goto(+im.dataset.i);
+  });
+  markStrip();
+}
+function markStrip(){
+  [...$('strip').querySelectorAll('img')].forEach((im, i) => {
+    im.classList.toggle('done', S.labeled.has(S.files[i]));
+    im.classList.toggle('cur', i === S.idx);
+  });
+  const cur = $('strip').querySelector('img.cur');
+  if(cur) cur.scrollIntoView({block: 'nearest', inline: 'center', behavior: 'smooth'});
+}
+
+async function loadFrame(){
+  const gen = ++S.gen;
+  const f = S.files[S.idx];
+  if(!f){ $('shot').src = ''; S.box = null; drawCrop(); return; }
+
+  const url = `/dataset/image?name=${encodeURIComponent(S.cls)}&file=${encodeURIComponent(f)}`;
+  await new Promise(res => {
+    const im = new Image();
+    im.onload = im.onerror = () => { if(gen === S.gen) $('shot').src = url; res(); };
+    im.src = url;
+  });
+  if(gen !== S.gen) return;
+
+  let boxes = [];
+  try{
+    const d = await (await fetch(
+      `/dataset/label?name=${encodeURIComponent(S.cls)}&file=${encodeURIComponent(f)}`)).json();
+    boxes = d.boxes || [];
+  }catch(e){}
+  if(gen !== S.gen) return;
+
+  // Если рамки нет — ставим рамку с прошлого кадра: соседние кадры почти
+  // одинаковы, и чаще всего её остаётся только чуть подправить.
+  S.box = boxes.length ? {x: boxes[0].x, y: boxes[0].y, w: boxes[0].w, h: boxes[0].h}
+        : (S.prev ? {...S.prev} : {x: .5, y: .5, w: .4, h: .4});
+  S.dirty = !boxes.length;
+  drawCrop();
+  updateProgress();
+  markStrip();
+}
+
+function updateProgress(){
+  $('prg').innerHTML = `кадр <b>${S.idx + 1}</b>/${S.files.length}<br>размечено <b>${S.labeled.size}</b>`;
+}
+
+async function save(boxes){
+  const f = S.files[S.idx];
+  if(!f) return true;
+  const r = await fetch('/dataset/label', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: S.cls, file: f, boxes}),
+  });
+  if(!r.ok){ toast(await errText(r), true); return false; }
+  S.labeled.add(f);
+  S.dirty = false;
+  markStrip();
+  updateProgress();
+  loadClasses();
+  return true;
+}
+
+async function saveIfDirty(){
+  if(!S.dirty || !S.box || !S.cls) return true;
+  return save([{cls: S.classes.findIndex(c => c.name === S.cls), ...S.box}]);
+}
+
+async function goto(i){
+  if(S.busy) return;
+  if(i < 0 || i >= S.files.length) return;
+  busy(true);
+  try{
+    if(S.box) S.prev = {...S.box};
+    await saveIfDirty();
+    S.idx = i;
+    await loadFrame();
+  }finally{ busy(false); }
+}
+
+// ── кнопки ────────────────────────────────────────────────────────────────
+$('bNext').onclick = async () => {
+  if(S.busy || !S.cls) return;
+  busy(true);
+  try{
+    if(S.box){
+      S.prev = {...S.box};
+      const ci = S.classes.findIndex(c => c.name === S.cls);
+      if(!await save([{cls: ci, ...S.box}])) return;
+    }
+    if(S.idx + 1 < S.files.length){ S.idx++; await loadFrame(); }
+    else toast('Это был последний кадр класса');
+  }finally{ busy(false); }
+};
+
+$('bPrev').onclick = () => goto(S.idx - 1);
+
+$('bSame').onclick = () => {
+  if(!S.prev){ toast('Ещё нет предыдущей рамки'); return; }
+  S.box = {...S.prev}; S.dirty = true; drawCrop();
+};
+
+$('bEmpty').onclick = async () => {
+  if(S.busy || !S.cls) return;
+  busy(true);
+  try{
+    if(await save([])){
+      S.box = null; drawCrop();
+      if(S.idx + 1 < S.files.length){ S.idx++; await loadFrame(); }
+    }
+  }finally{ busy(false); }
+};
+
+$('bAuto').onclick = async () => {
+  if(S.busy || !S.cls) return;
+  if(!confirm('Обвести моделью кадры без разметки? Рамки будут черновые — проверь их.')) return;
+  busy(true);
+  try{
+    const r = await fetch('/dataset/predict', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: S.cls, overwrite: false, limit: 150}),
+    });
+    if(!r.ok){ toast(await errText(r), true); return; }
+    const d = await r.json();
+    toast(`Обвела ${d.labeled.length}, не нашла на ${d.empty.length}. Пролистай и проверь.`);
+    const fr = await (await fetch('/dataset/frames?name=' + encodeURIComponent(S.cls))).json();
+    S.labeled = new Set(fr.labeled || []);
+    markStrip(); updateProgress(); loadClasses();
+    await loadFrame();
+  }finally{ busy(false); }
+};
+
+// Во весь экран: прячем ленту, классы и лишние кнопки. Выбор запоминаем —
+// кто размечает подолгу, обычно так и работает.
+$('bZen').onclick = () => {
+  const on = document.body.classList.toggle('zen');
+  $('bZen').textContent = on ? '⤡' : '⤢';
+  try{ localStorage.setItem('vision.zen', on ? '1' : ''); }catch(e){}
+  setTimeout(drawCrop, 60);      // область изменилась — пересчитать рамку
+};
+try{
+  if(localStorage.getItem('vision.zen')){
+    document.body.classList.add('zen');
+    $('bZen').textContent = '⤡';
+  }
+}catch(e){}
+
+// ── обучение прямо с телефона ─────────────────────────────────────────────
+let trTimer = null;
+
+$('bTrainOpen').onclick = async () => {
+  $('sheet').classList.add('on');
+  await loadBuilt();
+  trTick();
+  clearInterval(trTimer);
+  trTimer = setInterval(trTick, 2500);
+};
+$('bSheetClose').onclick = () => {
+  $('sheet').classList.remove('on');
+  clearInterval(trTimer); trTimer = null;
+};
+$('sheet').onclick = e => { if(e.target.id === 'sheet') $('bSheetClose').onclick(); };
+
+async function loadBuilt(){
+  try{
+    const d = await (await fetch('/dataset/built')).json();
+    if(!d.built){
+      $('trDs').innerHTML = '⚠ Датасет не собран. Разметь кадры и нажми «Собрать датасет».';
+      return;
+    }
+    const per = Object.entries(d.per_class || {})
+      .map(([k, v]) => `${k}: ${v.train}+${v.val}`).join(' · ');
+    $('trDs').innerHTML = (d.stale
+        ? '⚠ Разметка менялась после сборки — собери заново.<br>'
+        : `✓ Собрано ${d.at}.<br>`)
+      + `Обучающих ${d.train}, проверочных ${d.val}. ${per}`;
+  }catch(e){ $('trDs').textContent = 'не удалось узнать состав датасета'; }
+}
+
+$('bExport').onclick = async () => {
+  const b = $('bExport'); b.disabled = true; b.textContent = 'собираю…';
+  try{
+    const r = await fetch('/dataset/export', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({val_ratio: 0.2}),
+    });
+    const d = await r.json();
+    if(!r.ok || d.ok === false){ toast(d.error || d.detail || 'не вышло', true); }
+    else toast(`Собрано: обучающих ${d.train}, проверочных ${d.val}`);
+    await loadBuilt();
+  }catch(e){ toast('Ошибка сборки: ' + e, true); }
+  finally{ b.disabled = false; b.textContent = '📦 Собрать датасет'; }
+};
+
+$('bTrain').onclick = async () => {
+  const name = ($('trName').value || 'parts').trim();
+  if(!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)){
+    toast('Имя модели — латиницей, без пробелов', true); return;
+  }
+  $('bTrain').disabled = true;
+  try{
+    const r = await fetch('/train/start', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model: $('trBase').value, epochs: +$('trEpochs').value || 60,
+                            name, imgsz: 640, batch: 16}),
+    });
+    const d = await r.json();
+    if(d.ok === false){ toast(d.error || 'не запустилось', true); $('bTrain').disabled = false; }
+    else toast('Обучение пошло. Можно закрыть страницу — не прервётся.');
+  }catch(e){ toast('Ошибка: ' + e, true); $('bTrain').disabled = false; }
+  trTick();
+};
+
+$('bTrainStop').onclick = async () => {
+  $('bTrainStop').disabled = true;
+  await fetch('/train/stop', {method: 'POST'});
+  toast('Останавливаю — до конца текущей эпохи');
+};
+
+async function trTick(){
+  let s;
+  try{ s = await (await fetch('/train/status')).json(); }catch(e){ return; }
+
+  $('bTrain').disabled = !!s.running;
+  $('bTrainStop').disabled = !s.running || !!s.stopping;
+
+  const pct = s.epochs ? Math.round(s.epoch / s.epochs * 100) : 0;
+  $('trBar').style.width = (s.running || s.done ? pct : 0) + '%';
+
+  const map = (s.metrics || {})['metrics/mAP50(B)'];
+  if(s.error){
+    $('trState').innerHTML = '⚠ ' + s.error;
+  }else if(s.running){
+    $('trState').innerHTML = `эпоха <b>${s.epoch}</b> из ${s.epochs}`
+      + (map !== undefined ? ` · точность mAP50 <b>${map}</b>` : '')
+      + (s.stopping ? ' · останавливаю…' : '');
+  }else if(s.done){
+    $('trState').innerHTML = `✓ Готово${s.result_model ? ': <b>' + s.result_model + '</b>' : ''}`
+      + (map !== undefined ? ` · mAP50 <b>${map}</b>` : '');
+  }else{
+    $('trState').textContent = 'не запущено';
+  }
+
+  // последние строки лога — там же и разбор итога от сервера
+  const log = (s.log || []).slice(-8)
+    .map(l => l.replace(/\x1b\[[0-9;]*m/g, ''))
+    .filter(l => l.trim());
+  const box = $('trLog');
+  if(log.length){ box.style.display = 'block'; box.textContent = log.join('\n'); }
+  else box.style.display = 'none';
+}
+
+// ── старт ─────────────────────────────────────────────────────────────────
+(async () => {
+  await loadClasses();
+  if(S.classes.length) await selectClass(S.classes[0].name);
+})();
+</script>
+</body>
+</html>
