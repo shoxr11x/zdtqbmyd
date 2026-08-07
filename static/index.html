@@ -79,6 +79,13 @@
   .ev .a.in{color:var(--ok)} .ev .a.out{color:var(--warn)}
   .ev .i{margin-left:auto;color:var(--muted)}
 
+  /* Съёмка с двух камер */
+  .dualstage{position:relative;background:#000;border-radius:9px;overflow:hidden;aspect-ratio:4/3}
+  .dualstage img{width:100%;height:100%;object-fit:contain;display:block}
+  .camlabel{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);margin-bottom:6px}
+  .camdot{width:8px;height:8px;border-radius:50%;background:var(--bad);box-shadow:0 0 6px var(--bad);flex:none}
+  .camdot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+
   .hint{font-size:12px;color:var(--muted);background:var(--panel2);border:1px solid var(--line);
         border-radius:9px;padding:10px 12px;margin-top:12px;line-height:1.65}
   .err{background:#2a1720;border-color:#4a2530;color:#ff9a9a}
@@ -144,6 +151,31 @@
         <thead><tr><th>Класс</th><th style="text-align:right">→ вперёд</th><th style="text-align:right">← назад</th></tr></thead>
         <tbody id="tbl"><tr><td colspan="3" class="empty">Пока пусто</td></tr></tbody>
       </table>
+    </div>
+
+    <div class="card">
+      <h2>Съёмка с двух камер</h2>
+      <div class="totals">
+        <div>
+          <div class="camlabel"><span class="camdot" id="camDotA"></span>Камера A</div>
+          <div class="dualstage"><img id="dualImgA" alt="камера A"></div>
+          <div class="hint" id="dualStateA" style="margin-top:6px">не подключена</div>
+        </div>
+        <div>
+          <div class="camlabel"><span class="camdot" id="camDotB"></span>Камера B</div>
+          <div class="dualstage"><img id="dualImgB" alt="камера B"></div>
+          <div class="hint" id="dualStateB" style="margin-top:6px">не подключена</div>
+        </div>
+      </div>
+      <label class="f">Имя детали — общее на обе камеры</label>
+      <input type="text" id="dualName" value="detal" placeholder="например rama"
+             autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div class="row">
+        <button class="primary big" id="dualRec" disabled>● Снимать</button>
+      </div>
+      <div class="hint" id="dualRecHint">
+        Нужны обе камеры: открой <code>/phone</code> на первом телефоне и <code>/phone?cam=B</code> на втором.
+      </div>
     </div>
 
     <div class="card">
@@ -236,6 +268,9 @@
       <div class="hint" id="phoneHint" style="display:none">
         Набери на телефоне <b id="phoneUrl">vision.local/phone</b> и нажми там «Включить камеру».
         Сервис переключится на телефон сам. <span id="phoneState" style="color:var(--muted)">телефон не подключён</span>
+        <br>Второй телефон (камера B) — тот же адрес с <code>?cam=B</code>:
+        <b id="phoneUrlB">vision.local/phone?cam=B</b>. Управляется отдельно: <code>/stream?cam=B</code>,
+        <code>/stats?cam=B</code>.
       </div>
       <!-- для телефона зеркало прячем: сервер зеркалит кадр до детекции,
            а телефон рисует рамки поверх своего незеркального видео — всё уезжает вбок -->
@@ -430,6 +465,8 @@ $('model').onchange = () => cfg({model:$('model').value});
 fetch('/lan').then(r=>r.json()).then(d=>{
   $('phoneUrl').innerHTML = `${d.host}:${d.port_tls}/phone</b> <span style="color:var(--muted)">`
     + `(если не откроется — ${d.ip}:${d.port_tls}/phone)</span><b>`;
+  $('phoneUrlB').innerHTML = `${d.host}:${d.port_tls}/phone?cam=B</b> <span style="color:var(--muted)">`
+    + `(если не откроется — ${d.ip}:${d.port_tls}/phone?cam=B)</span><b>`;
 }).catch(()=>{});
 
 // ── список моделей ────────────────────────────────────────────────────────
@@ -511,6 +548,81 @@ async function tick(){
   }catch(e){ $('dot').classList.remove('on'); }
 }
 setInterval(tick, 700); tick();
+
+// ── съёмка с двух камер ─────────────────────────────────────────────────────
+// Видео тут не запускаем сами: камеры выходят на связь, когда на телефонах
+// открывают /phone и /phone?cam=B (см. /ws/camera) — здесь только показываем
+// то, что уже идёт на /stream, и включаем совместную съёмку.
+$('dualImgA').src = '/stream?cam=A';
+$('dualImgB').src = '/stream?cam=B';
+
+let dualCapturing = false, dualConnA = false, dualConnB = false;
+
+function dualNameError(v){
+  if(!v)                                     return 'впиши имя детали, например rama';
+  if(/[^\x20-\x7E]/.test(v))                 return 'только латиницей, например rama';
+  if(!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(v)) return 'можно латиницу, цифры, дефис и подчёркивание';
+  return '';
+}
+
+function refreshDualBtn(){
+  const bad = dualNameError($('dualName').value.trim());
+  $('dualRec').disabled = dualCapturing ? false : (bad !== '' || !dualConnA || !dualConnB);
+}
+$('dualName').addEventListener('input', refreshDualBtn);
+
+$('dualRec').onclick = async () => {
+  const want = !dualCapturing;
+  try{
+    const r = await post('/capture/both', {active: want, name: $('dualName').value.trim()});
+    if(r.error){
+      $('dualRecHint').className = 'hint err';
+      $('dualRecHint').textContent = '⚠ ' + r.error;
+      return;
+    }
+    dualCapturing = r.capturing;
+    $('dualName').disabled = dualCapturing;
+    $('dualRec').classList.toggle('primary', !dualCapturing);
+    $('dualRec').textContent = dualCapturing ? `■ Стоп · ${r.count}` : '● Снимать';
+  }catch(e){
+    $('dualRecHint').className = 'hint err';
+    $('dualRecHint').textContent = '⚠ Не удалось включить съёмку';
+  }
+  refreshDualBtn();
+};
+
+async function dualTick(){
+  let d;
+  try{ d = await (await fetch('/cams')).json(); }
+  catch(e){ return; }
+  const a = d.cams.A, b = d.cams.B;
+  dualConnA = !!a.phone; dualConnB = !!b.phone;
+  $('camDotA').classList.toggle('on', dualConnA);
+  $('camDotB').classList.toggle('on', dualConnB);
+  $('dualStateA').textContent = dualConnA ? 'подключена' : 'не подключена';
+  $('dualStateB').textContent = dualConnB ? 'подключена' : 'не подключена';
+
+  dualCapturing = a.capturing && b.capturing;
+  $('dualName').disabled = dualCapturing;
+  $('dualRec').classList.toggle('primary', !dualCapturing);
+  const total = (a.capture_count||0) + (b.capture_count||0);
+  $('dualRec').textContent = dualCapturing ? `■ Стоп · ${total}` : '● Снимать';
+
+  // Ошибку из dualRec.onclick перекрываем текущим статусом только на следующем
+  // опросе (раз в секунду) — она успевает мелькнуть, но не залипает навсегда.
+  const h = $('dualRecHint');
+  h.className = 'hint';
+  if(dualCapturing){
+    h.innerHTML = `Снимаю: A — <b>${a.capture_count||0}</b>, B — <b>${b.capture_count||0}</b> кадров.`;
+  }else if(!dualConnA || !dualConnB){
+    h.innerHTML = 'Нужны обе камеры: открой <code>/phone</code> на первом телефоне '
+                + 'и <code>/phone?cam=B</code> на втором.';
+  }else{
+    h.innerHTML = 'Обе камеры на связи — можно снимать.';
+  }
+  refreshDualBtn();
+}
+setInterval(dualTick, 1000); dualTick();
 
 // ── датасет ───────────────────────────────────────────────────────────────
 $('bLabel').onclick = () => { location.href = '/label'; };

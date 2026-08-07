@@ -48,7 +48,7 @@ import cv2
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                RedirectResponse, StreamingResponse)
 from PIL import Image, ImageDraw, ImageFont
@@ -77,6 +77,12 @@ os.chdir(BASE)
 # Python отдаёт управление другому потоку раз в 5 мс. Читающему потоку этого мало:
 # пока он ждёт своей очереди, камера успевает выкинуть кадр. Уменьшаем до 1 мс.
 sys.setswitchinterval(0.001)
+
+if torch.cuda.is_available():
+    # cuDNN подбирает самый быстрый алгоритм свёртки под конкретный размер кадра —
+    # у нас он не меняется (модель всегда кормят одним и тем же imgsz), так что
+    # есть смысл дать ему подобрать раз и закэшировать, а не гадать заново каждый кадр.
+    torch.backends.cudnn.benchmark = True
 
 
 def _silence_abrupt_disconnects():
@@ -601,7 +607,11 @@ class Vision:
         self.capture_last = now
         self.capture_count += 1
         folder = RAW / self.capture_name
-        imwrite_any(folder / f"{self.capture_name}_{self.capture_count:04d}.jpg", frame)
+        # Буква камеры в имени — обе камеры пишут в одну и ту же папку класса
+        # (это тот же класс детали, просто с двух ракурсов), а без этой буквы
+        # обе, стартовав съёмку в одну секунду, посчитали бы один и тот же
+        # порядковый номер и затёрли бы кадр друг друга.
+        imwrite_any(folder / f"{self.capture_name}_{self.name}_{self.capture_count:04d}.jpg", frame)
 
     # ── общий хвост для любого источника: раздать кадр и отрисовать ───────────
     def _publish(self, frame: np.ndarray):
@@ -768,6 +778,9 @@ class Vision:
             conf=self.conf,
             tracker="bytetrack.yaml",
             device=0 if self.device == "cuda" else "cpu",
+            # На видеокарте считаем в половинной точности — почти вдвое быстрее
+            # почти без потери точности. На CPU half не поддержан, там как был fp32.
+            half=self.device == "cuda",
             verbose=False,
         )
         r = results[0]
@@ -1007,55 +1020,60 @@ def label_page():
 
 
 @app.websocket("/ws/camera")
-async def ws_camera(ws: WebSocket):
+async def ws_camera(ws: WebSocket, cam_name: str = Query("A", alias="cam")):
     """
     Телефон шлёт сюда кадры (JPEG), в ответ получает разметку.
     Рамки рисует сам телефон поверх своего видео — так картинка на нём
     остаётся плавной, по сети летят только координаты.
+
+    Какую камеру обслуживать, решает параметр ?cam= в адресе: страница
+    /phone?cam=B подключается сюда как /ws/camera?cam=B. Без него — камера A,
+    как и было раньше с одним телефоном.
     """
     await ws.accept()
-    vision.phone_connected = True
+    v = cam(cam_name)
+    v.phone_connected = True
     # если сервис ещё не запущен на телефоне как на источнике — переключаем сами.
     # Обязательно в отдельном потоке: stop() ждёт завершения потоков до 6 секунд,
     # а прямо здесь это заморозило бы весь сервер.
-    if not vision.running or not vision.is_phone:
+    if not v.running or not v.is_phone:
         def switch():
-            vision.stop()
-            vision.source = "phone"
+            v.stop()
+            v.source = "phone"
             # пока идёт обучение, видеокарту не трогаем: кадры телефон всё равно
             # шлёт — просто пока без рамок
             if not trainer.running:
-                vision.start()
+                v.start()
         await asyncio.to_thread(switch)
     try:
         while True:
             data = await ws.receive_bytes()
-            vision.push_jpeg(data)
-            with vision.boxes_lock:
-                boxes = list(vision.boxes)
-            with vision.lock:
-                counts = {k: dict(v) for k, v in vision.counts.items()}
+            v.push_jpeg(data)
+            with v.boxes_lock:
+                boxes = list(v.boxes)
+            with v.lock:
+                counts = {k: dict(c) for k, c in v.counts.items()}
             await ws.send_json({
                 "boxes": [{"x1": b[0], "y1": b[1], "x2": b[2], "y2": b[3],
                            "name": b[4], "id": b[5], "conf": round(b[6], 2), "ci": b[7],
                            "color": b[8]}
                           for b in boxes],
-                "line_pos": vision.line_pos,
-                "line_orient": vision.line_orient,
-                "in": sum(v["in"] for v in counts.values()),
-                "out": sum(v["out"] for v in counts.values()),
-                "fps_detect": round(vision._rate(vision.hist_detect), 1),
-                "model_imgsz": vision.model_imgsz,
+                "line_pos": v.line_pos,
+                "line_orient": v.line_orient,
+                "in": sum(c["in"] for c in counts.values()),
+                "out": sum(c["out"] for c in counts.values()),
+                "fps_detect": round(v._rate(v.hist_detect), 1),
+                "model_imgsz": v.model_imgsz,
                 "shot": shot_orientation_cached(),
-                "capturing": vision.capturing,
-                "capture_name": vision.capture_name,
-                "capture_count": vision.capture_count,
-                "capture_skipped": vision.capture_skipped,
+                "capturing": v.capturing,
+                "capture_name": v.capture_name,
+                "capture_count": v.capture_count,
+                "capture_skipped": v.capture_skipped,
             })
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
-        vision.phone_connected = False
+        v.phone_connected = False
 
 
 @app.get("/stream")
@@ -1105,6 +1123,9 @@ def cams():
             "running": s["running"], "error": s["error"], "source": s["source"],
             "model": s["model"], "fps": s["fps"], "fps_detect": s["fps_detect"],
             "counts": s["counts"], "total_in": s["total_in"], "total_out": s["total_out"],
+            "phone": s["phone"],
+            "capturing": v.capturing, "capture_name": v.capture_name,
+            "capture_count": v.capture_count, "capture_skipped": v.capture_skipped,
         }
     a, b = CAMS["A"].stats(), CAMS["B"].stats()
     # расхождение считаем по каждому классу отдельно: общая сумма прячет случай,
@@ -1136,6 +1157,40 @@ def capture(c: CaptureCfg):
         v.capture_stop()
     return {"capturing": v.capturing, "name": v.capture_name,
             "count": v.capture_count, "skipped": v.capture_skipped}
+
+
+class CaptureBothCfg(BaseModel):
+    active: bool
+    name: str | None = None
+
+
+@app.post("/capture/both")
+def capture_both(c: CaptureBothCfg):
+    """
+    Съёмка сразу с обеих камер — два ракурса одной детали за одно нажатие
+    с компьютера. Один запрос вместо двух отдельных на /capture: иначе, если
+    один из них не долетит, камеры разъедутся — одна снимает, другая нет.
+    """
+    a, b = CAMS["A"], CAMS["B"]
+    if c.active:
+        if not (a.phone_connected and b.phone_connected):
+            return fail("Обе камеры должны быть подключены — открой /phone на обоих телефонах.")
+        name = c.name or a.capture_name
+        a.capture_start(name)
+        b.capture_start(name)
+    else:
+        a.capture_stop()
+        b.capture_stop()
+    return {
+        "capturing": a.capturing and b.capturing,
+        "name": a.capture_name,
+        "count": a.capture_count + b.capture_count,
+        "skipped": a.capture_skipped + b.capture_skipped,
+        "cams": {
+            "A": {"count": a.capture_count, "skipped": a.capture_skipped},
+            "B": {"count": b.capture_count, "skipped": b.capture_skipped},
+        },
+    }
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1406,8 +1461,9 @@ class ClassName(BaseModel):
 def dataset_delete(c: ClassName):
     """Удаляет класс целиком — и кадры, и разметку."""
     d = class_dir(c.name)
-    if vision.capturing and vision.capture_name == d.name:
-        vision.capture_stop()       # нельзя снимать в папку, которой сейчас не станет
+    for cam_v in CAMS.values():
+        if cam_v.capturing and cam_v.capture_name == d.name:
+            cam_v.capture_stop()    # нельзя снимать в папку, которой сейчас не станет
     shutil.rmtree(d, ignore_errors=True)
     # состав классов изменился — dataset_classes() увидит это и сам перепишет
     # номера во всей оставшейся разметке
@@ -1429,9 +1485,10 @@ def dataset_rename(c: ClassRename):
     if new.exists():
         return fail("Класс с таким именем уже есть")
 
-    was_capturing = vision.capturing and vision.capture_name == old.name
-    if was_capturing:
-        vision.capture_stop()
+    capturing_cams = [cam_v for cam_v in CAMS.values()
+                       if cam_v.capturing and cam_v.capture_name == old.name]
+    for cam_v in capturing_cams:
+        cam_v.capture_stop()
     old.rename(new)
     # список берём заранее, целиком: переименовывать файлы прямо во время обхода папки нельзя
     for f in sorted(new.iterdir()):
@@ -1448,8 +1505,8 @@ def dataset_rename(c: ClassRename):
         reg[reg.index(old.name)] = new.name
         _save_registry(reg)
 
-    if was_capturing:
-        vision.capture_start(new.name)
+    for cam_v in capturing_cams:
+        cam_v.capture_start(new.name)
     return {"ok": True, "classes": dataset_classes()}
 
 
@@ -2165,10 +2222,10 @@ def lan():
 
 
 @app.get("/models")
-def models():
+def models(cam_name: str = Query("A", alias="cam")):
     builtin = ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt"]
     own = [p.name for p in MODELS_DIR.glob("*.pt")]
-    return {"builtin": builtin, "own": own, "current": vision.model_name}
+    return {"builtin": builtin, "own": own, "current": cam(cam_name).model_name}
 
 
 @app.post("/start")
@@ -2200,56 +2257,63 @@ def reset(cam_name: str = Query("A", alias="cam")):
 
 @app.post("/config")
 def config(c: Config):
-    v = cam(c.cam)
-    if c.source is not None:
-        # Источник читается один раз, при открытии захвата: какой поток запустить
-        # и какую камеру открыть, решается в самом начале. Поменять одну строку
-        # мало — служба продолжит читать то, что открыла раньше. Так и выходило:
-        # в панели выбран телефон, а кадры идут с веб-камеры; выбрана камера 1,
-        # а читается нулевая; вернули веб-камеру после телефона — картинки нет
-        # совсем, и ни одной ошибки при этом не показано. Поэтому источник
-        # меняем только через полный перезапуск захвата.
-        src = c.source.strip()
-        if not src:
-            # пустое поле — не источник; молча ставить «0» тоже нельзя,
-            # иначе человек не поймёт, почему открылась не та камера
-            vision.error = "Источник не указан. Впиши 0, phone или ссылку rtsp://…"
-        elif src != vision.source:
-            was = vision.running
-            vision.stop()
-            vision.source = src
-            vision.error = None      # прежняя жалоба была про прежний источник
+    """
+    Настройки применяются сразу к ОБЕИМ камерам, без выбора: обе снимают одни
+    и те же детали с одного конвейера, так что модель, порог уверенности,
+    список классов и цвет всегда должны совпадать. Раздельные остаются только
+    счёт и источник запуска/остановки (/start, /stop, /reset, /capture) —
+    вот их для сравнения двух камер как раз нельзя схлопывать в одно.
+    """
+    for v in CAMS.values():
+        if c.source is not None:
+            # Источник читается один раз, при открытии захвата: какой поток запустить
+            # и какую камеру открыть, решается в самом начале. Поменять одну строку
+            # мало — служба продолжит читать то, что открыла раньше. Так и выходило:
+            # в панели выбран телефон, а кадры идут с веб-камеры; выбрана камера 1,
+            # а читается нулевая; вернули веб-камеру после телефона — картинки нет
+            # совсем, и ни одной ошибки при этом не показано. Поэтому источник
+            # меняем только через полный перезапуск захвата.
+            src = c.source.strip()
+            if not src:
+                # пустое поле — не источник; молча ставить «0» тоже нельзя,
+                # иначе человек не поймёт, почему открылась не та камера
+                v.error = "Источник не указан. Впиши 0, phone или ссылку rtsp://…"
+            elif src != v.source:
+                was = v.running
+                v.stop()
+                v.source = src
+                v.error = None      # прежняя жалоба была про прежний источник
+                if was:
+                    v.start()
+        if c.check_color is not None:
+            v.check_color = c.check_color
+        if c.expect_color is not None:
+            want = c.expect_color.strip().lower()
+            known = {n for _, _, n in HUES} | {"серый", "белый", "чёрный"}
+            v.expect_color = want if want in known else ""
+        if c.mirror is not None and not v.is_phone:
+            # Когда источник — телефон, зеркалить нельзя: сервер отразил бы кадр
+            # ДО распознавания, а телефон рисует рамки поверх своего, неотражённого
+            # видео — все рамки уехали бы по горизонтали.
+            v.mirror = c.mirror
+        if c.conf is not None:
+            v.conf = max(0.05, min(0.95, c.conf))
+        if c.line_pos is not None:
+            v.line_pos = max(0.02, min(0.98, c.line_pos))
+        if c.line_orient in ("v", "h"):
+            v.line_orient = c.line_orient
+        if c.only is not None:
+            wanted = [s.strip().lower() for s in c.only.split(",") if s.strip()]
+            # разрешаем писать по-русски: переводим обратно в исходные имена модели
+            back = {name: k for k, name in RU.items()}
+            v.only = {back.get(x, x) for x in wanted}
+        if c.model and c.model != v.model_name:
+            was = v.running
+            v.stop()
+            v.load_model(c.model)
             if was:
-                vision.start()
-    if c.check_color is not None:
-        vision.check_color = c.check_color
-    if c.expect_color is not None:
-        want = c.expect_color.strip().lower()
-        known = {n for _, _, n in HUES} | {"серый", "белый", "чёрный"}
-        vision.expect_color = want if want in known else ""
-    if c.mirror is not None and not vision.is_phone:
-        # Когда источник — телефон, зеркалить нельзя: сервер отразил бы кадр
-        # ДО распознавания, а телефон рисует рамки поверх своего, неотражённого
-        # видео — все рамки уехали бы по горизонтали.
-        vision.mirror = c.mirror
-    if c.conf is not None:
-        vision.conf = max(0.05, min(0.95, c.conf))
-    if c.line_pos is not None:
-        vision.line_pos = max(0.02, min(0.98, c.line_pos))
-    if c.line_orient in ("v", "h"):
-        vision.line_orient = c.line_orient
-    if c.only is not None:
-        wanted = [s.strip().lower() for s in c.only.split(",") if s.strip()]
-        # разрешаем писать по-русски: переводим обратно в исходные имена модели
-        back = {v: k for k, v in RU.items()}
-        vision.only = {back.get(x, x) for x in wanted}
-    if c.model and c.model != vision.model_name:
-        was = vision.running
-        vision.stop()
-        vision.load_model(c.model)
-        if was:
-            vision.start()
-    return vision.stats()
+                v.start()
+    return CAMS["A"].stats()
 
 
 # ── маленький сервер на порту 80: только перенаправляет на https ─────────────
@@ -2360,9 +2424,10 @@ if __name__ == "__main__":
     else:
         print(f"  http://127.0.0.1:{PORT}")
         print("  Для телефона нужен сертификат: запусти make_cert.py")
-    saved = vision.load_state()
-    if saved:
-        print(f"  Счёт восстановлен из сохранения от {saved}")
+    for cam_v in CAMS.values():
+        saved = cam_v.load_state()
+        if saved:
+            print(f"  Камера {cam_v.name}: счёт восстановлен из сохранения от {saved}")
     print("=" * 62)
     print("  Чтобы остановить — закрой это окно или нажми Ctrl+C")
     print("=" * 62)

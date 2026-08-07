@@ -183,7 +183,7 @@
 
 <header>
   <div class="dot" id="dot"></div>
-  <b>📱 Камера → сервер</b>
+  <b>📱 Камера <span id="camLabel">A</span> → сервер</b>
   <div class="m">
     отправка <b id="mTx">—</b><br>
     YOLO <b id="mYolo">—</b><br>
@@ -283,6 +283,10 @@
 
 <script>
 const $ = id => document.getElementById(id);
+// Какая это камера — из адреса страницы: /phone?cam=B открывают на втором
+// телефоне, чтобы он работал как камера B независимо от первого.
+const CAM = (new URLSearchParams(location.search).get('cam') || 'A').toUpperCase();
+$('camLabel').textContent = CAM;
 const video = $('v'), canvas = $('c'), ctx = canvas.getContext('2d');
 
 // холст, с которого снимаем кадр на отправку (640 в ширину — этого YOLO хватает)
@@ -368,7 +372,7 @@ function connect(){
   clearTimeout(reconnectTimer); reconnectTimer = null;
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws/camera`);
+  ws = new WebSocket(`${proto}://${location.host}/ws/camera?cam=${CAM}`);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
@@ -588,7 +592,7 @@ function showTurnWarn(shot){
 $('go').onclick    = startCamera;
 $('flip').onclick  = flipCamera;
 $('flip2').onclick = flipCamera;          // та же кнопка во вкладке «Снимать»
-$('reset').onclick = () => fetch('/reset', {method: 'POST'});
+$('reset').onclick = () => fetch('/reset?cam=' + CAM, {method: 'POST'});
 
 // памятка и вторая кнопка свёрнуты, чтобы видео занимало больше экрана
 $('more').onclick = () => {
@@ -788,7 +792,7 @@ $('rec').onclick = async () => {
   try{
     const r = await fetch('/capture', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({active: want, name: $('clsName').value.trim()})
+      body: JSON.stringify({active: want, name: $('clsName').value.trim(), cam: CAM})
     }).then(r => r.json());
     capturing = r.capturing;
     if(r.name) $('clsName').value = r.name;
