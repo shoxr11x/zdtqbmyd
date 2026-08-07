@@ -194,6 +194,14 @@
         <option value="yolo11m.pt">yolo11m.pt — тяжёлая, от ~1000 кадров</option>
       </select>
       <div class="hint" id="trBaseHint"></div>
+      <label class="f">Размер кадра при обучении</label>
+      <select id="trImgsz">
+        <option value="640" selected>640 — обычный, деталь крупная в кадре</option>
+        <option value="960">960 — детали помельче, много в кадре</option>
+        <option value="1280">1280 — детали мелкие, вид издалека</option>
+      </select>
+      <div class="hint" id="trImgszHint"></div>
+
       <label class="f">Сколько эпох (проходов по всем кадрам)</label>
       <input type="number" id="trEpochs" min="10" max="1000" step="10" value="80">
       <label class="f">Имя будущей модели (латиницей, без пробелов)</label>
@@ -248,6 +256,7 @@
         <b>yolo11n</b> — самая лёгкая и быстрая (nano), <b>s</b> и <b>m</b> — точнее, но тяжелее.
         Своя обученная модель появится здесь после тренировки.
       </div>
+      <div class="hint" id="modelImgsz"></div>
     </div>
 
     <div class="card">
@@ -315,7 +324,15 @@ async function post(url, body){
 const cfg = patch => post('/config', patch);
 
 $('bStart').onclick = async () => {
-  await cfg({source:$('src').value, conf:$('conf').value/100, mirror:mirror,
+  // пустое поле — не источник: раньше оно уходило на сервер как есть, захват
+  // не открывался, а на экране просто ничего не появлялось
+  const src = $('src').value.trim();
+  if(!src){
+    $('src').value = '0';
+    $('src').focus();
+    return;
+  }
+  await cfg({source:src, conf:$('conf').value/100, mirror:mirror,
              line_pos:$('pos').value/100, line_orient:orient, only:$('only').value});
   $('bStart').disabled = true;
   await post('/start');
@@ -343,6 +360,12 @@ $('mirOff').onclick = () => setMirror(false);
 $('expColor').onchange = () => cfg({expect_color: $('expColor').value});
 $('srcCam').onclick   = () => setSource('0');
 $('srcPhone').onclick = () => setSource('phone');
+// Вписали индекс руками — применяем сразу, не дожидаясь «Запустить»:
+// вторую камеру подключают именно так, вписав 1 вместо 0.
+$('src').onchange = () => {
+  const v = $('src').value.trim();
+  if(v) setSource(v); else $('src').value = '0';
+};
 // quiet = раскладываем то, что уже стоит на сервере, — обратно слать нечего
 function setSource(v, quiet){
   $('src').value = v;
@@ -375,7 +398,7 @@ function setOrient(o, quiet){
 // то, что человек крутит прямо сейчас.
 let stateLoaded = false;
 function applyServerState(s){
-  if(typeof s.source === 'string')   setSource(s.source, true);
+  if(s.source)                       setSource(s.source, true);
   if(typeof s.mirror === 'boolean')  setMirror(s.mirror, true);
   if(s.line_orient === 'v' || s.line_orient === 'h') setOrient(s.line_orient, true);
   if(typeof s.conf === 'number'){
@@ -437,6 +460,7 @@ async function tick(){
     $('bDev').innerHTML = s.device.includes('GPU')
         ? '⚡ <b style="color:var(--ok)">'+s.device+'</b>' : '🐌 <b>'+s.device+'</b>';
     $('bModel').textContent = s.model;
+    showModelImgsz(s.model_imgsz);
 
     if(s.source === 'phone'){
       $('phoneState').innerHTML = s.phone
@@ -589,6 +613,32 @@ function checkBaseModel(trainCount){
 }
 $('trBase').addEventListener('change', () => checkBaseModel(0));
 
+// Все кадры сжимаются до этого размера. Деталь в 3% кадра при 640 превращается
+// в пятнышко около 20 точек — разглядеть её сеть уже не может. При 1280 у неё
+// вдвое больше материала, но обучение идёт заметно дольше.
+function showImgszHint(){
+  const v = +$('trImgsz').value, h = $('trImgszHint');
+  h.className = 'hint';
+  h.innerHTML = v <= 640
+    ? 'Подходит, когда деталь занимает заметную часть кадра. Быстрее всего.'
+    : (v <= 960
+      ? 'Промежуточный: мелкие детали видны лучше, обучение примерно вдвое дольше.'
+      : 'Для вида издалека и мелких деталей. Обучение вчетверо дольше обычного, '
+        + 'зато сеть различает то, что при 640 сливается в пятно.');
+}
+$('trImgsz').addEventListener('change', showImgszHint);
+showImgszHint();
+
+// Размер, на котором обучена загруженная модель. Телефон берёт его сам, но
+// видеть это полезно: если тренировать заново на другом размере, поток
+// перестроится, а старые замеры уверенности сравнивать будет уже не с чем.
+function showModelImgsz(v){
+  const h = $('modelImgsz');
+  if(!v){ h.textContent = ''; return; }
+  h.innerHTML = `Обучена на кадре <b>${v}</b> — столько телефон и шлёт `
+              + `(в разделе «Что отправлять» стоит «как у модели»).`;
+}
+
 async function loadBuilt(){
   let d;
   try{ d = await (await fetch('/dataset/built')).json(); }
@@ -666,7 +716,8 @@ $('bTrain').onclick = async () => {
   setTrainHint('', 'Запускаю обучение… первая эпоха начнётся не сразу: модель готовит кадры.');
   try{
     const r = await post('/train/start', {epochs: parseInt($('trEpochs').value) || 80,
-                                          model: $('trBase').value, name: name});
+                                          model: $('trBase').value, name: name,
+                                          imgsz: +$('trImgsz').value, batch: 0});
     if(r.error){ setTrainHint('err', '⚠ ' + r.error); trainPending = 0; $('bStart').disabled = running; }
   }catch(e){
     setTrainHint('err', '⚠ Не удалось запустить обучение');

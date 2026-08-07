@@ -204,6 +204,13 @@
         <option value="yolo11m.pt">yolo11m.pt — от ~1000 кадров</option>
       </select>
 
+      <div class="lbl">Размер кадра при обучении</div>
+      <select id="trImgsz">
+        <option value="640" selected>640 — деталь крупная в кадре</option>
+        <option value="960">960 — детали помельче, много в кадре</option>
+        <option value="1280">1280 — мелкие детали, вид издалека</option>
+      </select>
+
       <div class="two">
         <div>
           <div class="lbl">Эпох</div>
@@ -575,7 +582,7 @@ $('bTrain').onclick = async () => {
     const r = await fetch('/train/start', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({model: $('trBase').value, epochs: +$('trEpochs').value || 60,
-                            name, imgsz: 640, batch: 16}),
+                            name, imgsz: +$('trImgsz').value || 640, batch: 0}),
     });
     const d = await r.json();
     if(d.ok === false){ toast(d.error || 'не запустилось', true); $('bTrain').disabled = false; }

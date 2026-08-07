@@ -251,11 +251,53 @@ def load_font(size: int):
 
 FONT = load_font(15)
 
+# Подписи кириллицей рисует PIL — OpenCV кириллицу не умеет. Но гонять ради
+# этого весь кадр BGR→RGB→PIL→numpy→BGR, как было раньше, слишком дорого:
+# четыре полных прохода по кадру на каждом кадре, тридцать раз в секунду.
+# Работа эта идёт в потоке-читателе и почти вся держит GIL, поэтому поток
+# распознавания оставался без процессора: замерено 440 мс на кадр там, где
+# сама сеть считает 7 мс.
+#
+# Рисуем текст один раз на маленькой чёрно-белой полоске и запоминаем её.
+# Полоска не зависит от цвета рамки, поэтому одна и та же подпись годится
+# любому классу, а в кадр она попадает обычным присваиванием по маске.
+_LABELS: dict[str, np.ndarray] = {}
+
+
+def label_mask(text: str) -> np.ndarray:
+    """Силуэт подписи: 255 там, где буква. Считается один раз на текст."""
+    m = _LABELS.get(text)
+    if m is not None:
+        return m
+    w = max(1, int(FONT.getlength(text)) + 2)
+    img = Image.new("L", (w, 19), 0)
+    ImageDraw.Draw(img).text((0, 0), text, font=FONT, fill=255)
+    m = np.array(img)
+    # Словарь не должен расти без предела: подпись содержит проценты
+    # уверенности, а они меняются. Тысячи полосок по ~4 КБ — это немного,
+    # но пусть будет край.
+    if len(_LABELS) > 2000:
+        _LABELS.clear()
+    _LABELS[text] = m
+    return m
+
 
 class Vision:
-    """Всё состояние сервиса: источник, модель, счётчики."""
+    """
+    Всё состояние одной камеры: источник, модель, ворота, счётчики.
 
-    def __init__(self):
+    Экземпляров может быть несколько — по одному на камеру. Общего между ними
+    почти ничего: у каждой свои потоки, свои ворота и свой счёт. Модель тоже
+    своя, и это не расточительство, а необходимость: track(persist=True) держит
+    память трекера внутри самого объекта модели, и две камеры на одной модели
+    путали бы номера деталей друг друга.
+    """
+
+    def __init__(self, name: str = "A"):
+        self.name = name
+        # Камера A пишет в прежний файл — счёт, накопленный до появления второй
+        # камеры, не должен пропасть. Остальные заводят себе свой.
+        self.state_file = STATE_FILE if name == "A" else BASE / f"state_{name.lower()}.json"
         # замок для готовых кадров и статистики
         self.lock = threading.Lock()
         self.frame_id = 0
@@ -283,6 +325,7 @@ class Vision:
         # работе — 32 мс на кадр против 16 у nano, то есть 25 распознаваний
         # в секунду вместо 33. Для конвейера и того, и другого с большим запасом.
         self.model_name = "yolo11m.pt"
+        self.model_imgsz = 640     # размер кадра, на котором обучена модель
         self.names: dict[int, str] = {}
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -339,7 +382,10 @@ class Vision:
         """Каждое пересечение — строкой в файл. Это и история, и будущая подача в MES."""
         try:
             with EVENTS_FILE.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({**ev, "at": datetime.now().isoformat(timespec="seconds")},
+                # камера в записи обязательна: журнал общий на все камеры, и без
+                # неё потом не разобрать, кто именно видел эту деталь
+                f.write(json.dumps({**ev, "cam": self.name,
+                                    "at": datetime.now().isoformat(timespec="seconds")},
                                    ensure_ascii=False) + "\n")
         except OSError:
             pass        # не смогли записать — счёт всё равно не роняем
@@ -368,17 +414,17 @@ class Vision:
                     "expect_color": self.expect_color,
                     "saved": datetime.now().strftime("%d.%m %H:%M:%S"),
                 }
-            STATE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+            self.state_file.write_text(json.dumps(data, ensure_ascii=False, indent=1),
                                   encoding="utf-8")
         except OSError:
             pass
 
     def load_state(self):
         """Поднимаем счётчики после перезапуска."""
-        if not STATE_FILE.exists():
+        if not self.state_file.exists():
             return
         try:
-            d = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            d = json.loads(self.state_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
         with self.lock:
@@ -417,6 +463,17 @@ class Vision:
         self.model = YOLO(path)
         self.model_name = name
         self.names = self.model.names
+        # На каком размере кадра модель обучалась. Кормить её кадром другого
+        # размера — терять качество: замерено, что модели, обученной на 640,
+        # кадр 1280 уронил уверенность с 0.93 до 0.86. Телефон возьмёт это
+        # число и будет слать ровно столько, сколько нужно.
+        self.model_imgsz = 640
+        try:
+            tr = (getattr(self.model, "ckpt", None) or {}).get("train_args") or {}
+            v = int(tr.get("imgsz") or 640)
+            self.model_imgsz = max(320, min(1600, v))
+        except (TypeError, ValueError, AttributeError):
+            pass
         # Забываем только память трекера: номера объектов от прежней модели
         # ничего не значат. Счёт смены при этом обнулять нельзя — раньше здесь
         # стоял полный сброс, и он затирал не только счётчики в памяти, но и
@@ -477,8 +534,22 @@ class Vision:
     def _open_capture(self):
         src = self.source.strip()
         if src.isdigit():
-            # без CAP_DSHOW: в OpenCV 5 этот бэкенд больше не открывает камеру по индексу
-            cap = cv2.VideoCapture(int(src))
+            # Каким бэкендом открывать — не мелочь. Внешнюю камеру Media Foundation
+            # заводит шестнадцать секунд: замерено на Logitech BRIO — 15.6 с при
+            # автоподборе, 16.0 с при явном MSMF и 1.1 с через DirectShow.
+            # Встроенную все открывают одинаково быстро, так что разницу видно
+            # только на второй камере — и выглядит она как «камера не работает»,
+            # потому что столько никто не ждёт.
+            # Раньше тут стоял отказ от DirectShow. Проверил заново: на этой
+            # сборке OpenCV он открывает обе камеры и держит 26-27 к/с в трёх
+            # прогонах подряд без единого пропуска. Поэтому пробуем его первым,
+            # а прежний путь оставляем запасным — на случай камеры, которой
+            # DirectShow не подойдёт.
+            idx = int(src)
+            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap.release()
+                cap = cv2.VideoCapture(idx)
             # MJPG вместо несжатого потока — камера отдаёт заметно ровнее
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             # 960x540: YOLO всё равно ужимает кадр до 640, зато вдвое меньше пикселей
@@ -617,7 +688,12 @@ class Vision:
             cap = self._open_capture()
             if not cap.isOpened():
                 if self._alive(me):
-                    self.error = f"Не удалось открыть источник «{self.source}». Проверь камеру."
+                    src = self.source.strip()
+                    hint = ("Встроенная обычно 0, подключённая следом — 1, потом 2. "
+                            "Ещё камеру может держать другая программа: Zoom, Skype, «Камера»."
+                            if src.isdigit() else
+                            "Для ссылки rtsp:// проверь адрес, логин и пароль.")
+                    self.error = f"Не удалось открыть источник «{src}». {hint}"
                     self.running = False
                 cap.release()
                 return
@@ -625,6 +701,7 @@ class Vision:
         self.reader.start()
 
         last_raw = -1
+        misses = 0
         while self._alive(me):
             ts = time.perf_counter()
             with self.raw_cond:
@@ -632,7 +709,22 @@ class Vision:
                 frame, last_raw = self.raw, self.raw_id
             self.t_wait = self.t_wait * 0.9 + (time.perf_counter() - ts) * 1000 * 0.1
             if not fresh or frame is None:
+                # Камера может открыться и не отдать ни одного кадра — так бывает,
+                # когда её держит другая программа или когда номер указывает не на
+                # то устройство. Раньше это проходило совсем молча: служба «работает»,
+                # ошибок нет, а экран пустой, и понять причину было неоткуда.
+                # У телефона пустое ожидание — норма: он мог ещё не подключиться.
+                if not self.is_phone:
+                    misses += 1
+                    if misses >= 3 and self._alive(me):
+                        self.error = (
+                            f"Источник «{self.source}» открылся, но кадров не даёт. "
+                            "Скорее всего камеру держит другая программа или номер "
+                            "указывает не на то устройство — попробуй соседний номер.")
+                        self.running = False
+                        break
                 continue
+            misses = 0
 
             ts = time.perf_counter()
             boxes, live = self._detect(frame)
@@ -651,7 +743,16 @@ class Vision:
         if mine:
             mine.join(timeout=3)            # поток источника отпускает камеру первым
         if cap:
-            cap.release()
+            # Закрывать камеру, пока другой поток сидит внутри cap.read(), нельзя:
+            # это чужая память под чтением, и процесс может просто упасть. Такое
+            # бывает ровно в одном случае — камера открылась и намертво замолчала.
+            # Тогда лучше оставить её занятой до перезапуска службы, чем уронить
+            # весь сервис вместе с накопленным счётом.
+            if mine and mine.is_alive():
+                self.error = ((self.error or "") + " Камера не отвечает — "
+                              "чтобы освободить её, перезапусти программу.").strip()
+            else:
+                cap.release()
         if self.session == me:
             self.running = False
             self.raw = None
@@ -741,7 +842,10 @@ class Vision:
             cv2.rectangle(frame, (x1, y1), (x2, y2), bgr(rgb), 2)
             cv2.circle(frame, (cx, cy), 4, bgr(rgb), -1)
             text = f"{name} #{tid} · {cf*100:.0f}%" + (f" · {col}" if col else "")
-            cv2.rectangle(frame, (x1, max(0, y1 - 22)), (x1 + 9 * len(text) + 10, y1), bgr(rgb), -1)
+            # ширину плашки берём у шрифта, а не на глаз: раньше стояло
+            # 9 пикселей на символ, и у длинных подписей хвост вылезал наружу
+            tw = label_mask(text).shape[1]
+            cv2.rectangle(frame, (x1, max(0, y1 - 22)), (x1 + tw + 10, y1), bgr(rgb), -1)
             labels.append((x1 + 5, max(0, y1 - 20), text))
 
         # «ворота»
@@ -754,13 +858,17 @@ class Vision:
             cv2.line(frame, (0, y), (w, y), (60, 220, 255), 3)
             cv2.line(frame, (0, y), (w, y), (255, 255, 255), 1)
 
-        # подписи кириллицей одним проходом через PIL (OpenCV её не умеет)
-        if labels:
-            pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            d = ImageDraw.Draw(pil)
-            for x, y, text in labels:
-                d.text((x, y), text, font=FONT, fill=(10, 18, 28))
-            frame = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+        # Подписи кириллицей: готовую полоску кладём прямо в кадр по маске.
+        # Весь кадр через PIL больше не гоняем — см. label_mask().
+        for x, y, text in labels:
+            m = label_mask(text)
+            th, tw = m.shape
+            # обрезаем по краю кадра, иначе подпись у самой границы уронит срез
+            th, tw = min(th, h - y), min(tw, w - x)
+            if th <= 0 or tw <= 0:
+                continue
+            roi = frame[y:y + th, x:x + tw]
+            roi[m[:th, :tw] > 96] = (10, 18, 28)
 
         return frame
 
@@ -785,6 +893,7 @@ class Vision:
                        "отрисовка": round(self.t_draw, 1)},
             "device": "GPU (CUDA)" if self.device == "cuda" else "CPU",
             "model": self.model_name,
+            "model_imgsz": self.model_imgsz,
             "source": self.source,
             "phone": self.phone_connected,
             "mirror": self.mirror,
@@ -805,8 +914,18 @@ class Vision:
         }
 
 
-vision = Vision()
+# Камеры. «A» — та единственная, что была раньше: её имя стоит по умолчанию
+# везде, поэтому старые адреса и сохранённый счёт продолжают работать как были.
+# «B» добавляется для съёмки конвейера с двух сторон.
+CAMS: dict[str, Vision] = {"A": Vision("A"), "B": Vision("B")}
+vision = CAMS["A"]
 app = FastAPI(title="Vision · счёт деталей")
+
+
+def cam(name: str | None = None) -> Vision:
+    """Камера по имени из адреса. Неизвестное имя — это «A», а не ошибка:
+    половина ссылок в проекте написана вообще без имени."""
+    return CAMS.get((name or "A").upper(), CAMS["A"])
 
 
 class Config(BaseModel):
@@ -926,6 +1045,8 @@ async def ws_camera(ws: WebSocket):
                 "in": sum(v["in"] for v in counts.values()),
                 "out": sum(v["out"] for v in counts.values()),
                 "fps_detect": round(vision._rate(vision.hist_detect), 1),
+                "model_imgsz": vision.model_imgsz,
+                "shot": shot_orientation_cached(),
                 "capturing": vision.capturing,
                 "capture_name": vision.capture_name,
                 "capture_count": vision.capture_count,
@@ -938,20 +1059,22 @@ async def ws_camera(ws: WebSocket):
 
 
 @app.get("/stream")
-async def stream():
+async def stream(cam_name: str = Query("A", alias="cam")):
     """
     MJPEG-поток: браузер показывает его обычным <img>.
     Генератор именно async: синхронный uvicorn гоняет через пул потоков,
     и на каждый кадр набегает лишний перескок между потоками — отсюда дёрганье.
     """
+    v = cam(cam_name)
+
     async def gen():
         last = -1
         while True:
-            if vision.frame_id == last:
+            if v.frame_id == last:
                 await asyncio.sleep(0.004)      # ждём новый кадр, не занимая поток
                 continue
-            with vision.lock:
-                buf, last = vision.jpeg, vision.frame_id
+            with v.lock:
+                buf, last = v.jpeg, v.frame_id
             if buf:
                 # Content-Length обязателен: без него браузер ищет границу кадра
                 # перебором байтов, и картинка подрагивает
@@ -961,24 +1084,58 @@ async def stream():
 
 
 @app.get("/stats")
-def stats():
-    return JSONResponse(vision.stats())
+def stats(cam_name: str = Query("A", alias="cam")):
+    return JSONResponse(cam(cam_name).stats())
+
+
+@app.get("/cams")
+def cams():
+    """
+    Сводка по всем камерам разом — чтобы панель не опрашивала каждую отдельно.
+
+    Счёт по камерам НЕ складывается. Камеры стоят по бокам одного конвейера и
+    видят одни и те же детали: сумма означала бы, что каждая деталь прошла
+    дважды. Показываем показания рядом и расхождение между ними — по нему и
+    видно, какая сторона снимает лучше и сколько одна теряет против другой.
+    """
+    out = {}
+    for name, v in CAMS.items():
+        s = v.stats()
+        out[name] = {
+            "running": s["running"], "error": s["error"], "source": s["source"],
+            "model": s["model"], "fps": s["fps"], "fps_detect": s["fps_detect"],
+            "counts": s["counts"], "total_in": s["total_in"], "total_out": s["total_out"],
+        }
+    a, b = CAMS["A"].stats(), CAMS["B"].stats()
+    # расхождение считаем по каждому классу отдельно: общая сумма прячет случай,
+    # когда одна камера недосчиталась одних деталей, а другая — других
+    classes = set(a["counts"]) | set(b["counts"])
+    diff = {}
+    for k in classes:
+        ai = (a["counts"].get(k) or {}).get("in", 0)
+        bi = (b["counts"].get(k) or {}).get("in", 0)
+        if ai or bi:
+            diff[k] = {"a": ai, "b": bi, "spread": abs(ai - bi)}
+    return {"cams": out, "diff": diff,
+            "both_running": all(v.running for v in CAMS.values())}
 
 
 class CaptureCfg(BaseModel):
     active: bool
     name: str | None = None
+    cam: str | None = None
 
 
 @app.post("/capture")
 def capture(c: CaptureCfg):
     """Съёмка кадров в датасет прямо с телефона."""
+    v = cam(c.cam)
     if c.active:
-        vision.capture_start(c.name or vision.capture_name)
+        v.capture_start(c.name or v.capture_name)
     else:
-        vision.capture_stop()
-    return {"capturing": vision.capturing, "name": vision.capture_name,
-            "count": vision.capture_count, "skipped": vision.capture_skipped}
+        v.capture_stop()
+    return {"capturing": v.capturing, "name": v.capture_name,
+            "count": v.capture_count, "skipped": v.capture_skipped}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1080,6 +1237,86 @@ def class_dir(name: str | None, must_exist: bool = True) -> Path:
 def frame_files(d: Path) -> list[Path]:
     """Кадры класса по алфавиту. На этот порядок опираются и автообводка, и сборка."""
     return sorted(d.glob("*.jpg"), key=lambda p: p.name)
+
+
+_shot_cache: tuple[float, int, str] = (0.0, -1, "")
+
+
+def shot_orientation() -> str:
+    """
+    Как держали телефон, когда снимали датасет: "portrait" или "landscape".
+
+    Сеть не умеет распознавать повёрнутую деталь: замерено, что кадр, повёрнутый
+    на 90°, роняет находки с 30/30 при уверенности 0.93 до 0.36. Обычного
+    отражения слева направо при обучении для этого мало — поворотов там нет.
+    Поэтому снимать и работать надо в одном положении, а расхождение показывать
+    сразу, пока человек не решил, что модель просто плохая.
+
+    Размеры берём из заголовка JPEG, картинку не разжимаем. Хватает выборки:
+    ответ нужен один на весь датасет.
+
+    Ходить по диску прямо в обработчике кадров нельзя — он асинхронный, и на
+    это время встаёт весь сервер вместе с видео. Поэтому здесь только счёт, а
+    зовут эту функцию из отдельного потока: см. shot_orientation_cached().
+    """
+    global _shot_cache
+    now = time.monotonic()
+
+    files: list[Path] = []
+    for name in dataset_classes():
+        files += frame_files(RAW / name)
+    if not files:
+        _shot_cache = (now, 0, "")
+        return ""
+    if _shot_cache[1] == len(files):
+        _shot_cache = (now, _shot_cache[1], _shot_cache[2])
+        return _shot_cache[2]
+
+    step = max(1, len(files) // 24)
+    tall = wide = 0
+    for f in files[::step]:
+        try:
+            with Image.open(f) as im:
+                w, h = im.size
+        except (OSError, ValueError):
+            continue
+        if h > w:
+            tall += 1
+        elif w > h:
+            wide += 1
+    seen = tall + wide
+    # смешанный датасет — не наше дело выбирать за человека, молчим
+    out = "" if not seen else ("portrait" if tall > seen * 0.8 else
+                               "landscape" if wide > seen * 0.8 else "")
+    _shot_cache = (now, len(files), out)
+    return out
+
+
+_shot_busy = False
+
+
+def shot_orientation_cached() -> str:
+    """
+    То же самое, но мгновенно: отдаёт последнее известное значение, а считает
+    новое в стороне. Значение меняется только когда доснимают кадры, так что
+    отставание на несколько секунд тут ничего не стоит — в отличие от паузы
+    в видеопотоке, которую видно сразу.
+    """
+    global _shot_busy
+    if not _shot_busy and time.monotonic() - _shot_cache[0] > 5.0:
+        _shot_busy = True
+
+        def refresh():
+            global _shot_busy
+            try:
+                shot_orientation()
+            except OSError:
+                pass
+            finally:
+                _shot_busy = False
+
+        threading.Thread(target=refresh, daemon=True).start()
+    return _shot_cache[2]
 
 
 def frame_path(name: str | None, file: str | None) -> Path:
@@ -1840,11 +2077,22 @@ class Trainer:
                          "Обучение может развалиться на середине — для такого датасета "
                          "надёжнее yolo11n.pt.")
 
+            # Чем крупнее кадр при обучении, тем больше памяти нужно видеокарте.
+            # Подбираем батч под размер сами, иначе на 1280 обучение падает
+            # с нехваткой памяти, а человек видит невнятную ошибку.
+            imgsz = max(320, min(1280, int(cfg.imgsz)))
+            batch = int(cfg.batch) if cfg.batch else 0
+            if not batch:
+                batch = 16 if imgsz <= 640 else (8 if imgsz <= 960 else 4)
+            if imgsz > 640:
+                self.say(f"Кадр {imgsz} — крупнее обычного: мелкие детали видны лучше, "
+                         f"но обучение идёт дольше. Батч подобран {batch}.")
+
             model.train(
                 data=str(data),
                 epochs=self.epochs,
-                imgsz=max(160, min(1280, int(cfg.imgsz))),
-                batch=int(cfg.batch),
+                imgsz=imgsz,
+                batch=batch,
                 device=0 if vision.device == "cuda" else "cpu",
                 patience=30,                 # 30 эпох без улучшений — дальше смысла нет
                 project=str(RUNS), name=name, exist_ok=True,
@@ -1891,7 +2139,8 @@ class TrainCfg(BaseModel):
     model: str = "yolo11n.pt"
     name: str = "parts"
     imgsz: int = 640
-    batch: int = 16
+    # 0 — подобрать под размер кадра автоматически
+    batch: int = 0        # 0 — подобрать под размер кадра автоматически
 
 
 @app.post("/train/start")
@@ -1923,32 +2172,55 @@ def models():
 
 
 @app.post("/start")
-def start():
+def start(cam_name: str = Query("A", alias="cam")):
+    v = cam(cam_name)
     # во время обучения видеокарта занята целиком — распознавание там не поместится
     if trainer.running:
-        vision.error = "Идёт обучение — видеокарта занята. Дождись конца или останови обучение."
-        return vision.stats()
-    vision.start()
+        v.error = "Идёт обучение — видеокарта занята. Дождись конца или останови обучение."
+        return v.stats()
+    v.start()
     time.sleep(0.8)
-    return vision.stats()
+    return v.stats()
 
 
 @app.post("/stop")
-def stop():
-    vision.stop()
+def stop(cam_name: str = Query("A", alias="cam")):
+    cam(cam_name).stop()
     return {"ok": True}
 
 
 @app.post("/reset")
-def reset():
-    vision.reset()
+def reset(cam_name: str = Query("A", alias="cam")):
+    # Сбрасываем только названную камеру. Общего сброса нарочно нет: смысл двух
+    # камер в том, чтобы сравнивать их показания, а сравнивать можно только
+    # счёт, набранный за один и тот же отрезок времени.
+    cam(cam_name).reset()
     return {"ok": True}
 
 
 @app.post("/config")
 def config(c: Config):
+    v = cam(c.cam)
     if c.source is not None:
-        vision.source = c.source
+        # Источник читается один раз, при открытии захвата: какой поток запустить
+        # и какую камеру открыть, решается в самом начале. Поменять одну строку
+        # мало — служба продолжит читать то, что открыла раньше. Так и выходило:
+        # в панели выбран телефон, а кадры идут с веб-камеры; выбрана камера 1,
+        # а читается нулевая; вернули веб-камеру после телефона — картинки нет
+        # совсем, и ни одной ошибки при этом не показано. Поэтому источник
+        # меняем только через полный перезапуск захвата.
+        src = c.source.strip()
+        if not src:
+            # пустое поле — не источник; молча ставить «0» тоже нельзя,
+            # иначе человек не поймёт, почему открылась не та камера
+            vision.error = "Источник не указан. Впиши 0, phone или ссылку rtsp://…"
+        elif src != vision.source:
+            was = vision.running
+            vision.stop()
+            vision.source = src
+            vision.error = None      # прежняя жалоба была про прежний источник
+            if was:
+                vision.start()
     if c.check_color is not None:
         vision.check_color = c.check_color
     if c.expect_color is not None:

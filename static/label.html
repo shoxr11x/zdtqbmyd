@@ -114,6 +114,14 @@
   .pick i{width:11px;height:11px;border-radius:3px;flex:none;font-style:normal}
   .pick .k{margin-left:auto;color:var(--muted);font-size:11px;font-family:ui-monospace,Consolas,monospace;
            border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  /* Удаление класса — рядом с кнопками, по которым кликают постоянно.
+     Поэтому крестик бледный и проявляется только при наведении на строку. */
+  .pick .del{margin-left:6px;flex:none;width:24px;height:24px;padding:0;line-height:1;
+             border:1px solid transparent;border-radius:6px;background:transparent;
+             color:#5c6b7d;font-size:12px;cursor:pointer;opacity:0;transition:.15s}
+  .pick:hover .del{opacity:1}
+  .pick .del:hover{background:#2a1720;border-color:#4a2530;color:#ff9a9a}
+  .pick .k + .del{margin-left:6px}
 
   .box{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:9px;font-size:12.5px;
        cursor:pointer;border:1px solid transparent}
@@ -409,11 +417,47 @@ function drawClasses(){
 function drawPicks(){
   $('picks').innerHTML = S.names.length
     ? S.names.map((n,i)=>`<div class="pick ${i===S.pick?'act':''}" data-i="${i}">
-        <i style="background:${color(i)}"></i>${n}${i<9?`<span class="k">${i+1}</span>`:''}</div>`).join('')
+        <i style="background:${color(i)}"></i>${n}${i<9?`<span class="k">${i+1}</span>`:''}
+        <button class="del" data-del="${n}" title="удалить класс целиком">✕</button></div>`).join('')
     : '<div class="empty">Классов ещё нет</div>';
   [...$('picks').querySelectorAll('.pick')].forEach(el=>{
-    el.onclick = () => setPick(+el.dataset.i);
+    el.onclick = e => { if(!e.target.closest('[data-del]')) setPick(+el.dataset.i); };
   });
+  [...$('picks').querySelectorAll('[data-del]')].forEach(b=>{
+    b.onclick = e => { e.stopPropagation(); removeClass(b.dataset.del); };
+  });
+}
+
+// Удаление класса стирает все его кадры вместе с разметкой и переписывает
+// номера классов в оставшейся разметке. Отменить нельзя, поэтому спрашиваем
+// с числами: сколько кадров и сколько труда пропадёт.
+async function removeClass(name){
+  if(S.busy) return;
+  const c = S.classes.find(x => x.name === name) || {};
+  const ok = confirm(
+    `Удалить класс «${name}» целиком?\n\n` +
+    `Пропадут ${c.frames || 0} кадров и разметка ${c.labeled || 0} из них.\n` +
+    `Отменить это будет нельзя.`);
+  if(!ok) return;
+
+  S.busy = true;
+  try{
+    const r = await fetch('/dataset/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name}),
+    });
+    if(!r.ok){ toast(await errText(r), true); return; }
+    toast(`Класс «${name}» удалён`);
+    S.busy = false;
+    // если удалили тот, что открыт — переключаемся на первый оставшийся
+    const wasCurrent = (S.cur === name);
+    await loadClasses();
+    if(wasCurrent){
+      if(S.classes.length) await selectClass(S.classes[0].name);
+      else { S.files = []; S.cur = null; S.idx = 0; drawProgress(); }
+    }
+  }catch(e){ toast('Не вышло удалить: ' + e, true); }
+  finally{ S.busy = false; }
 }
 
 function setPick(i){

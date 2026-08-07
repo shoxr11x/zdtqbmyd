@@ -80,6 +80,12 @@
   #panelCap.on{display:flex; flex-direction:column; gap:9px}
   #panelCap > button{flex:none}
 
+  /* телефон повёрнут не так, как снимали датасет — модель деталь не узнает */
+  #turnWarn{display:none; margin-bottom:10px; padding:9px 11px; border-radius:11px;
+            background:rgba(255,176,32,.12); border:1px solid rgba(255,176,32,.45);
+            color:var(--warn); font-size:12.5px; line-height:1.45}
+  #turnWarn.on{display:block}
+
   .tot{display:grid; grid-template-columns:1fr 1fr; gap:10px}
   .t{background:#1c2531; border:1px solid var(--line); border-radius:12px; padding:11px; text-align:center}
   .t .n{font-size:29px; font-weight:800; line-height:1}
@@ -111,6 +117,10 @@
   button.rec{background:#3a1a22; border-color:#6b2b38; color:#ff9aa8}
   input[type=text]{
     flex:1; min-width:0; padding:13px 12px; border-radius:11px; background:#1c2531;
+    border:1px solid var(--line); color:var(--text); font-size:15px; font-family:inherit;
+  }
+  select{
+    width:100%; padding:13px 12px; border-radius:11px; background:#1c2531;
     border:1px solid var(--line); color:var(--text); font-size:15px; font-family:inherit;
   }
 
@@ -202,6 +212,7 @@
 
   <!-- ── вкладка «Смотреть»: рамки и счёт ворот ─────────────────────── -->
   <section class="panel on" id="panelLive">
+    <div id="turnWarn"></div>
     <div class="chips" id="live"><span class="dim">в кадре пока пусто</span></div>
     <div class="tot">
       <div class="t a"><div class="n" id="tIn">0</div><div class="c">прошло вперёд →</div></div>
@@ -238,6 +249,15 @@
 
     <!-- Разметка — следующий шаг после съёмки, поэтому кнопка видна всегда.
          Раньше она пряталась внутри свёрнутого блока, и найти её было нельзя. -->
+    <div class="lbl">Что отправлять на распознавание</div>
+    <select id="sendW">
+      <option value="">как у модели — рекомендуется</option>
+      <option value="640">640 — деталь крупная в кадре, быстрее всего</option>
+      <option value="960">960 — деталь помельче или широкий угол</option>
+      <option value="1280">1280 — мелкие детали, вид издалека</option>
+    </select>
+    <div class="memo" id="sendWHint"></div>
+
     <a class="asbtn" href="/label-phone">✂ Разметить снятые кадры</a>
 
     <!-- Памятка и смена камеры свёрнуты: без них видео занимает половину
@@ -277,6 +297,18 @@ const W_NORMAL = 640, W_CAPTURE = 1024;
 // на предыдущий. Так быстрее и при этом очередь не копится.
 const PERIOD = 15;               // как часто проверяем, можно ли слать
 
+// Ширина кадра, который уходит на распознавание.
+// По умолчанию берём тот размер, на котором обучена загруженная модель:
+// кормить её кадром другого размера — терять качество. Замерено: модели,
+// обученной на 640, кадр 1280 уронил уверенность с 0.93 до 0.86.
+// «Авто» и означает «как у модели»; можно выбрать вручную, если знаешь зачем.
+// Ключ новый: у телефонов, что уже заходили сюда, в старом лежит «640» —
+// не потому что его выбрали, а потому что таким было умолчание.
+const SW_KEY = 'vision.sendw2';
+let sendW = 640;
+let sendAuto = lsGet(SW_KEY) === '';   // пусто — значит «как у модели»
+if(!sendAuto) sendW = +lsGet(SW_KEY) || 640;
+
 let ws = null, stream = null, facing = 'environment', reconnectTimer = null;
 let sending = false, sentAt = 0, lastReplyAt = 0, loopsStarted = false, lag = 0;
 let txTimes = [], lastData = {boxes: [], line_pos: .5, line_orient: 'v'};
@@ -310,7 +342,7 @@ async function startCamera(){
   try{
     if(stream) stream.getTracks().forEach(t => t.stop());
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: { facingMode: {ideal: facing}, width: {ideal: 1280}, height: {ideal: 720} },
       audio: false
     });
     video.srcObject = stream;
@@ -367,6 +399,8 @@ function connect(){
     // сколько кадр летал туда-обратно: это и есть отставание рамок от видео
     lag = lag ? lag * 0.8 + (lastReplyAt - sentAt) * 0.2 : lastReplyAt - sentAt;
     $('mLag').textContent = Math.round(lag) + ' мс';
+    applyModelImgsz(lastData.model_imgsz);
+    showTurnWarn(lastData.shot);
     updateLive();
     // счётчик снятых кадров идёт с сервера — он и пишет их на диск
     if(lastData.capturing !== undefined){
@@ -394,7 +428,8 @@ function tick(){
   if(!video.videoWidth) return;
 
   // подгоняем размеры холстов под пропорции камеры (один раз при смене)
-  const w = capturing ? W_CAPTURE : W_NORMAL;
+  // при съёмке в датасет кадр берём крупнее — его потом размечать руками
+  const w = capturing ? Math.max(W_CAPTURE, sendW) : sendW;
   const h = Math.round(w * video.videoHeight / video.videoWidth);
   if(grab.width !== w || grab.height !== h){
     grab.width = canvas.width = w;
@@ -502,6 +537,52 @@ if(location.protocol !== 'https:'){
 function flipCamera(){
   facing = (facing === 'environment') ? 'user' : 'environment';
   startCamera();
+}
+
+// Крупнее кадр — мелкие детали видны, но каждый кадр тяжелее: и по сети, и
+// для нейросети. Показываем цену честно, чтобы не гадать.
+function showSendW(){
+  const chosen = $('sendW').value;
+  sendAuto = (chosen === '');
+  lsSet(SW_KEY, chosen);
+  if(!sendAuto) sendW = +chosen || 640;
+  const k = (sendW / 640) ** 2;
+  const cost = k > 1.2
+    ? ` Данных примерно в ${k.toFixed(0)} раза больше обычного: скорость ниже, отставание выше.`
+    : '';
+  $('sendWHint').innerHTML = sendAuto
+    ? `Берём размер из самой модели — сейчас <b>${sendW}</b>. Так она видит кадр таким же, `
+      + `каким видела при обучении, и не теряет уверенность.` + cost
+    : `Задано вручную: <b>${sendW}</b>. Если модель обучена на другом размере, `
+      + `качество упадёт — надёжнее «как у модели».` + cost;
+}
+$('sendW').onchange = showSendW;
+
+// размер модели приходит с сервера вместе с остальными числами
+function applyModelImgsz(v){
+  if(!v || !sendAuto || v === sendW) return;
+  sendW = v;
+  showSendW();
+}
+
+// Повёрнутую деталь сеть не узнаёт: замерено, что поворот кадра на 90° роняет
+// находки с 30/30 при уверенности 0.93 до 3/30 при 0.36. Обычного отражения
+// слева направо при обучении для этого мало — поворотов там нет. Значит держать
+// телефон надо так же, как держали при съёмке, и о расхождении лучше сказать
+// вслух: иначе выглядит просто как «модель не работает».
+function showTurnWarn(shot){
+  const el = $('turnWarn');
+  const now = video.videoWidth && video.videoHeight
+    ? (video.videoHeight > video.videoWidth ? 'portrait' : 'landscape') : '';
+  if(!shot || !now || shot === now){ el.classList.remove('on'); return; }
+  el.classList.add('on');
+  el.innerHTML = shot === 'portrait'
+    ? '⚠️ Датасет снят <b>вертикально</b>, а телефон сейчас <b>горизонтально</b>. '
+      + 'Деталь повёрнута на 90° — модель её почти не видит. Поверни телефон '
+      + 'вертикально или пересними датасет горизонтально.'
+    : '⚠️ Датасет снят <b>горизонтально</b>, а телефон сейчас <b>вертикально</b>. '
+      + 'Деталь повёрнута на 90° — модель её почти не видит. Поверни телефон '
+      + 'горизонтально или пересними датасет вертикально.';
 }
 
 $('go').onclick    = startCamera;
@@ -752,6 +833,8 @@ function showRec(n, skipped){
 (function init(){
   const saved = lsGet(LS_KEY);
   if(saved) $('clsName').value = saved;     // подставляем прошлое имя детали
+  $('sendW').value = sendAuto ? '' : String(sendW);
+  showSendW();
   checkName();
   showRec(0, 0);
   setTab('live');
