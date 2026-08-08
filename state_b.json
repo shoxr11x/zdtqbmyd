@@ -519,7 +519,7 @@
    "color_ok": true
   }
  ],
- "model": "uyda.pt",
+ "model": "parts.pt",
  "expect_color": "",
- "saved": "08.08 00:30:15"
+ "saved": "08.08 22:09:47"
 }

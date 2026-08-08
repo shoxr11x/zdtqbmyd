@@ -314,15 +314,25 @@ let sendAuto = lsGet(SW_KEY) === '';   // пусто — значит «как �
 if(!sendAuto) sendW = +lsGet(SW_KEY) || 640;
 
 let ws = null, stream = null, facing = 'environment', reconnectTimer = null;
-let sending = false, sentAt = 0, lastReplyAt = 0, loopsStarted = false, lag = 0;
+let lastReplyAt = 0, loopsStarted = false, lag = 0;
 let txTimes = [], lastData = {boxes: [], line_pos: .5, line_orient: 'v'};
+
+// Кадры, отправленные на сервер, но ещё не дождавшиеся ответа. Раньше
+// отправка ждала ответа на предыдущий кадр перед следующим — и вся частота
+// упиралась не в скорость YOLO (сервер отвечает не дожидаясь СВОЕГО
+// распознавания, шлёт последние готовые рамки), а в чистое время в оба конца
+// по сети. Теперь в полёте может быть до MAX_INFLIGHT кадров разом — сервер
+// отвечает строго по порядку получения, так что перепутать ответы нельзя,
+// а очередь всё равно не растёт бесконечно, если сеть отстаёт.
+const MAX_INFLIGHT = 2;
+let inFlight = [];               // {w, h, at} по каждому неотвеченному кадру
 
 // Сервер отдаёт рамки в пикселях ТОГО кадра, который получил. При включении и
 // выключении съёмки кадр меняет размер (640 ⇄ 1024) вместе с холстом, и ответ
 // на прежний кадр без пересчёта нарисовался бы не в том масштабе — рамки
-// дёргались бы к левому верхнему углу. Поэтому запоминаем размер каждого
-// отправленного кадра, а в момент ответа — размер того, к которому он относится.
-let sentW = 0, sentH = 0;        // размер последнего отправленного кадра
+// дёргались бы к левому верхнему углу. Поэтому размер каждого отправленного
+// кадра хранится вместе с ним в inFlight, а в момент ответа — размер того,
+// к которому он относится.
 let dataW = 0, dataH = 0;        // размер кадра, которому соответствует lastData
 
 // Если ответ на кадр не пришёл за это время — считаем его потерянным и шлём дальше.
@@ -377,31 +387,33 @@ function connect(){
 
   ws.onopen = () => {
     $('dot').classList.add('on');
-    sending = false;                            // начинаем с чистого листа
+    inFlight = [];                              // начинаем с чистого листа
     lastReplyAt = performance.now();
     hideErr();
   };
   ws.onclose = () => {
     $('dot').classList.remove('on');
-    sending = false;                            // иначе отправка встанет навсегда
+    inFlight = [];                              // иначе отправка встанет навсегда
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, 1200);
   };
   ws.onerror = () => {
-    sending = false;
+    inFlight = [];
     showErr('Нет связи с сервером. Проверь, что компьютер в той же сети и включён.');
   };
   ws.onmessage = e => {
     try { lastData = JSON.parse(e.data); } catch(err){ return; }
-    // ответ относится к последнему отправленному кадру — запоминаем его размер
-    dataW = sentW; dataH = sentH;
+    // ответы приходят строго в порядке отправки — этот относится к самому
+    // старому ещё не подтверждённому кадру
+    const fr = inFlight.shift();
+    if(fr){ dataW = fr.w; dataH = fr.h; }
     $('tIn').textContent  = lastData.in;
     $('tOut').textContent = lastData.out;
     $('mYolo').textContent = lastData.fps_detect + '/с';
-    sending = false;
     lastReplyAt = performance.now();
     // сколько кадр летал туда-обратно: это и есть отставание рамок от видео
-    lag = lag ? lag * 0.8 + (lastReplyAt - sentAt) * 0.2 : lastReplyAt - sentAt;
+    const rtt = fr ? (lastReplyAt - fr.at) : 0;
+    lag = lag ? lag * 0.8 + rtt * 0.2 : rtt;
     $('mLag').textContent = Math.round(lag) + ' мс';
     applyModelImgsz(lastData.model_imgsz);
     showTurnWarn(lastData.shot);
@@ -442,8 +454,8 @@ function tick(){
 
   const now = performance.now();
 
-  // сторож №1: ответ на кадр потерялся — не ждём его вечно
-  if(sending && now - sentAt > REPLY_TIMEOUT) sending = false;
+  // сторож №1: самый старый неотвеченный кадр потерялся — не ждём его вечно
+  if(inFlight.length && now - inFlight[0].at > REPLY_TIMEOUT) inFlight.shift();
 
   // сторож №2: сервер молчит совсем — пересоздаём соединение
   if(ws && ws.readyState === 1 && lastReplyAt && now - lastReplyAt > DEAD_TIMEOUT){
@@ -452,17 +464,17 @@ function tick(){
     return;
   }
 
-  // не копим очередь: следующий кадр только после ответа на предыдущий
-  if(!ws || ws.readyState !== 1 || sending || ws.bufferedAmount > 200000) return;
+  // до MAX_INFLIGHT кадров в полёте разом — очередь всё равно не растёт бесконечно
+  if(!ws || ws.readyState !== 1 || inFlight.length >= MAX_INFLIGHT || ws.bufferedAmount > 200000) return;
 
-  sending = true; sentAt = now;
-  gctx.drawImage(video, 0, 0, grab.width, grab.height);
-  sentW = grab.width; sentH = grab.height;   // в этих пикселях сервер вернёт рамки
+  const fw = grab.width, fh = grab.height;   // в этих пикселях сервер вернёт рамки
+  gctx.drawImage(video, 0, 0, fw, fh);
   grab.toBlob(b => {
-    if(!b || !ws || ws.readyState !== 1){ sending = false; return; }
+    if(!b || !ws || ws.readyState !== 1) return;
     // Blob уходит в сокет напрямую: раньше он сначала перекладывался
     // в массив байтов — лишний шаг и лишняя задержка на каждом кадре
-    try { ws.send(b); } catch(e){ sending = false; return; }
+    try { ws.send(b); } catch(e){ return; }
+    inFlight.push({w: fw, h: fh, at: performance.now()});
 
     const t = performance.now();
     txTimes.push(t);
@@ -478,7 +490,7 @@ function tick(){
 // сокет закрывается. Возвращаемся — приводим всё в чувство.
 document.addEventListener('visibilitychange', () => {
   if(document.visibilityState !== 'visible') return;
-  sending = false;
+  inFlight = [];
   lastReplyAt = performance.now();
   keepAwake();
   connect();

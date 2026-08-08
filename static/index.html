@@ -154,6 +154,21 @@
     </div>
 
     <div class="card">
+      <h2>Сверка камер · A vs B</h2>
+      <div class="hint" id="camDiffStatus">—</div>
+      <table>
+        <thead><tr><th>Класс</th><th style="text-align:right">A</th><th style="text-align:right">B</th><th style="text-align:right">расхождение</th></tr></thead>
+        <tbody id="camDiffTbl"><tr><td colspan="4" class="empty">—</td></tr></tbody>
+      </table>
+      <div class="hint">
+        Камеры смотрят на одни и те же детали — счёт с них НЕ складывается, а сравнивается.
+        Расхождение — сигнал, что одна из камер что-то потеряла (например, трекер сбился у ворот
+        из-за плотно висящих рядом деталей), а не «на сколько их больше». Официальный счёт — камера A,
+        это то же число, что в «Итог по воротам» выше.
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Съёмка с двух камер</h2>
       <div class="totals">
         <div>
@@ -184,6 +199,11 @@
         <thead><tr><th>Класс</th><th style="text-align:right">кадров</th><th style="text-align:right">размечено</th></tr></thead>
         <tbody id="dsTbl"><tr><td colspan="3" class="empty">Загружаю…</td></tr></tbody>
       </table>
+      <div class="hint">
+        Галочка — включать ли класс в следующую сборку датасета. Модель учится сразу на всех
+        отмеченных классах разом (не отдельная модель на каждый), но необязательно на всех, что
+        вообще есть на диске — можно, например, отделить тестовый класс от рабочих деталей.
+      </div>
       <div class="row">
         <button class="primary big" id="bLabel">✏ Разметить →</button>
       </div>
@@ -213,9 +233,9 @@
         <tbody id="trDsTbl"><tr><td colspan="3" class="empty">Загружаю…</td></tr></tbody>
       </table>
       <div class="hint">
-        Модель <b>одна на все детали сразу</b> — она учится отличать их друг от друга,
-        а не по отдельной модели на каждую деталь. Поэтому в обучение идут <b>все классы из списка выше</b>,
-        а не только тот, который нужен прямо сейчас.
+        Модель <b>одна сразу на все отмеченные детали</b> — она учится отличать их друг от друга,
+        а не по отдельной модели на каждую деталь. Какие классы это будут — отмечаешь галочками
+        в «Датасет · свои детали» перед сборкой; необязательно все, что вообще есть на диске.
       </div>
       <div class="hint" id="trDsState">Смотрю, что собрано…</div>
       <div class="hint" id="trDsMissing" style="display:none"></div>
@@ -292,6 +312,7 @@
         Своя обученная модель появится здесь после тренировки.
       </div>
       <div class="hint" id="modelImgsz"></div>
+      <div class="hint" id="modelClasses"></div>
     </div>
 
     <div class="card">
@@ -498,6 +519,7 @@ async function tick(){
         ? '⚡ <b style="color:var(--ok)">'+s.device+'</b>' : '🐌 <b>'+s.device+'</b>';
     $('bModel').textContent = s.model;
     showModelImgsz(s.model_imgsz);
+    showModelClasses(s.classes);
 
     if(s.source === 'phone'){
       $('phoneState').innerHTML = s.phone
@@ -621,12 +643,59 @@ async function dualTick(){
     h.innerHTML = 'Обе камеры на связи — можно снимать.';
   }
   refreshDualBtn();
+  renderCamDiff(d);
 }
 setInterval(dualTick, 1000); dualTick();
+
+// ── сверка камер: A vs B ─────────────────────────────────────────────────
+// Данные для этого те же самые, что уже опрашивает dualTick() раз в секунду —
+// отдельного запроса не заводим. «running» тут не показатель: у телефона он
+// остаётся true и после того, как тот отвалился (иначе поток пришлось бы
+// обрывать на середине кадра) — поэтому смотрим именно на «подключён ли
+// телефон сейчас», как и в остальной части этой карточки.
+function renderCamDiff(d){
+  const status = $('camDiffStatus'), tbl = $('camDiffTbl');
+  if(!dualConnA || !dualConnB){
+    status.className = 'hint warn';
+    status.textContent = 'Работает только одна камера — сравнивать пока не с чем.';
+    tbl.innerHTML = '<tr><td colspan="4" class="empty">—</td></tr>';
+    return;
+  }
+  const a = d.cams.A, b = d.cams.B;
+  const rows = Object.entries(d.diff || {});
+  if(!rows.length){
+    status.className = 'hint';
+    status.textContent = 'Обе камеры на связи. Пока ни одна деталь не прошла через ворота.';
+    tbl.innerHTML = '<tr><td colspan="4" class="empty">Пока пусто</td></tr>';
+    return;
+  }
+  const totalSpread = rows.reduce((s, [, v]) => s + v.spread, 0);
+  status.className = 'hint' + (totalSpread ? ' warn' : ' good');
+  status.innerHTML = totalSpread
+    ? `⚠ Суммарное расхождение: <b>${totalSpread}</b> — смотри по классам ниже, где именно теряются детали.`
+    : '✓ Камеры совпадают, расхождений нет.';
+  const totalGap = Math.abs((a.total_in || 0) - (b.total_in || 0));
+  tbl.innerHTML = rows.map(([k, v]) =>
+      `<tr><td>${k}</td><td class="num">${v.a}</td><td class="num">${v.b}</td>
+       <td class="num" style="color:${v.spread ? 'var(--warn)' : 'var(--ok)'}">${v.spread}</td></tr>`).join('')
+    + `<tr><td style="color:var(--muted)">всего</td><td class="num">${a.total_in || 0}</td>
+       <td class="num">${b.total_in || 0}</td>
+       <td class="num" style="color:${totalGap ? 'var(--warn)' : 'var(--ok)'}">${totalGap}</td></tr>`;
+}
 
 // ── датасет ───────────────────────────────────────────────────────────────
 $('bLabel').onclick = () => { location.href = '/label'; };
 $('bDsRefresh').onclick = () => { loadDataset(); loadBuilt(); };
+
+// Какие классы включать в следующую сборку. По умолчанию — все; выбор
+// хранится тут же, а не перечитывается из таблицы, иначе обновление списка
+// (после сборки, после доснятого кадра) сбрасывало бы галочки на «все».
+const dsSelected = {};
+function dsIsChecked(name){ return dsSelected[name] !== false; }
+$('dsTbl').addEventListener('change', ev => {
+  const chk = ev.target.closest('.dsChk');
+  if(chk) dsSelected[chk.getAttribute('data-cls')] = chk.checked;
+});
 
 async function loadDataset(){
   let d;
@@ -637,7 +706,9 @@ async function loadDataset(){
   }
   const cls = d.classes || [];
   $('dsTbl').innerHTML = cls.length
-    ? cls.map(c=>`<tr><td>${c.name}</td><td class="num">${c.frames}</td>
+    ? cls.map(c=>`<tr><td><label style="display:flex;align-items:center;gap:7px;cursor:pointer">
+                  <input type="checkbox" class="dsChk" data-cls="${c.name}" ${dsIsChecked(c.name) ? 'checked' : ''}>
+                  ${c.name}</label></td><td class="num">${c.frames}</td>
                   <td class="num" style="color:${c.labeled ? 'var(--ok)' : 'var(--muted)'}">${c.labeled}</td></tr>`).join('')
       + `<tr><td style="color:var(--muted)">всего</td><td class="num">${d.total_frames}</td>
          <td class="num">${d.total_labeled}</td></tr>`
@@ -668,12 +739,19 @@ $('bExport').onclick = async () => {
   if(!(ratio > 0)) ratio = 0.2;                     // пусто или не число — берём привычную пятую часть
   ratio = Math.min(0.5, Math.max(0.05, ratio));     // держим в тех же границах, что и поле
   $('valRatio').value = ratio;
+  const chosen = [...document.querySelectorAll('.dsChk:checked')].map(el => el.getAttribute('data-cls'));
   const box = $('dsExport');
+  if(!chosen.length){
+    box.style.display = 'block';
+    box.className = 'hint err';
+    box.textContent = '⚠ Отметь хотя бы один класс галочкой в таблице выше.';
+    return;
+  }
   box.style.display = 'block';
   box.className = 'hint'; box.textContent = 'Собираю…';
   $('bExport').disabled = true;
   try{
-    const r = await post('/dataset/export', {val_ratio: ratio});
+    const r = await post('/dataset/export', {val_ratio: ratio, classes: chosen});
     if(r.error){ box.className = 'hint err'; box.textContent = '⚠ ' + r.error; }
     else{
       box.className = 'hint good';
@@ -749,6 +827,16 @@ function showModelImgsz(v){
   if(!v){ h.textContent = ''; return; }
   h.innerHTML = `Обучена на кадре <b>${v}</b> — столько телефон и шлёт `
               + `(в разделе «Что отправлять» стоит «как у модели»).`;
+}
+
+// Какие классы знает именно ЗАГРУЖЕННАЯ модель — не то же самое, что состав
+// датасета на диске: датасет растёт и меняется, а модель помнит те классы,
+// на которых её реально обучили. Так видно, не устарела ли модель против
+// текущего датасета (например, класс добавили, а модель про него не знает).
+function showModelClasses(list){
+  const h = $('modelClasses');
+  if(!list || !list.length){ h.textContent = ''; return; }
+  h.innerHTML = `Эта модель различает: <b>${list.join(', ')}</b>.`;
 }
 
 async function loadBuilt(){

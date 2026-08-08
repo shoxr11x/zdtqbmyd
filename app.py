@@ -338,6 +338,14 @@ class Vision:
         self.source = "0"            # "0" = веб-камера | "phone" | rtsp://...
         self.mirror = True           # зеркалить картинку (для веб-камеры так привычнее)
         self.stream_width = 960      # ширина картинки в браузере
+        # Рисование рамок + JPEG-кодирование превью — тяжёлая, держащая GIL
+        # работа. Кадры с телефона идут в своём темпе (сеть/камера телефона),
+        # а этот темп ограничен отдельно: без ограничения превью отбирает
+        # процессорное время у потока распознавания сильнее, чем стоит
+        # плавность картинки в браузере — на счёт и на сам детект превью
+        # не влияет никак, это просто картинка для десктопной панели.
+        self.show_gap = 1 / 28       # не чаще 28 обновлений превью в секунду
+        self._shown_at = 0.0
         self.conf = 0.45             # порог уверенности
         self.line_pos = 0.5          # положение «ворот», 0..1
         self.line_orient = "v"       # 'v' вертикальная | 'h' горизонтальная
@@ -632,14 +640,21 @@ class Vision:
             else:
                 self._maybe_save(frame)
 
-        # отдаём сырой кадр нейросети (она работает в своём темпе)
+        # отдаём сырой кадр нейросети (она работает в своём темпе) — это дёшево,
+        # без ограничения по частоте: детектор сам решает, когда за ним прийти
         with self.raw_cond:
             self.raw = frame
             self.raw_id += 1
             self.raw_cond.notify_all()
 
-        # рисуем последнюю известную разметку на копии и публикуем
+        # а вот рисование рамок и JPEG-кодирование превью — дорого, и его
+        # частоту ограничиваем отдельно (см. show_gap)
         ts = time.perf_counter()
+        if ts - self._shown_at < self.show_gap:
+            return
+        self._shown_at = ts
+
+        # рисуем последнюю известную разметку на копии и публикуем
         with self.boxes_lock:
             boxes = self.boxes
         shown = self._draw(frame.copy(), boxes)
@@ -1673,6 +1688,11 @@ def class_slugs(classes: list[str]) -> dict[str, str]:
 
 class ExportCfg(BaseModel):
     val_ratio: float = 0.2
+    # Какие классы включить в сборку. Пусто/не задано — все, как раньше.
+    # Так можно собрать датасет и обучить модель только на части классов,
+    # не трогая остальные (например, отделить тестовый мусорный класс от
+    # рабочих деталей).
+    classes: list[str] | None = None
 
 
 # Обстановка, а не деталь. Готовая модель узнаёт эти вещи куда увереннее, чем
@@ -1788,8 +1808,20 @@ def dataset_export(c: ExportCfg):
     Берём только размеченные кадры, включая негативы.
     """
     ratio = min(0.9, max(0.0, float(c.val_ratio)))
-    classes = dataset_classes()
+    all_classes = dataset_classes()
+    if c.classes:
+        wanted = set(c.classes)
+        classes = [n for n in all_classes if n in wanted]
+        if not classes:
+            return fail("Ни один из выбранных классов не найден — выбери хотя бы один.")
+    else:
+        classes = all_classes
     slugs = class_slugs(classes)
+    # Сырая разметка хранит номер класса из ПОЛНОГО списка (dataset/raw), а в
+    # сборке классов может быть меньше — им нужны свои номера 0..N-1, иначе
+    # nc в data.yaml не совпадёт с тем, что реально в разметке, и Ultralytics
+    # либо упадёт, либо молча выбросит все рамки как «класс не найден».
+    remap = {all_classes.index(name): i for i, name in enumerate(classes)}
 
     items = []
     for name in classes:
@@ -1842,10 +1874,13 @@ def dataset_export(c: ExportCfg):
         part = split[it["stem"]]
         shutil.copyfile(it["img"], DATASET / "images" / part / f"{it['stem']}.jpg")
         # Разметку не копируем, а перезаписываем — заодно вычищаются кривые строки.
-        # Рамку с несуществующим номером класса выбрасываем: Ultralytics такой
-        # кадр молча пропустит целиком, и человек не поймёт, куда делись данные.
-        boxes = [b for b in read_boxes(it["txt"]) if 0 <= b["cls"] < len(classes)]
-        dropped += len(read_boxes(it["txt"])) - len(boxes)
+        # Заодно переномеровываем классы под сборку (см. remap выше). Рамку класса,
+        # которого нет в сборке (не выбрали, или он вообще не существует), выбрасываем:
+        # Ultralytics такой кадр молча пропустит целиком, и человек не поймёт,
+        # куда делись данные.
+        raw_boxes = read_boxes(it["txt"])
+        boxes = [{**b, "cls": remap[b["cls"]]} for b in raw_boxes if b["cls"] in remap]
+        dropped += len(raw_boxes) - len(boxes)
         write_boxes(DATASET / "labels" / part / f"{it['stem']}.txt", boxes)
         n[part] += 1
 
@@ -2265,54 +2300,60 @@ def config(c: Config):
     вот их для сравнения двух камер как раз нельзя схлопывать в одно.
     """
     for v in CAMS.values():
-        if c.source is not None:
-            # Источник читается один раз, при открытии захвата: какой поток запустить
-            # и какую камеру открыть, решается в самом начале. Поменять одну строку
-            # мало — служба продолжит читать то, что открыла раньше. Так и выходило:
-            # в панели выбран телефон, а кадры идут с веб-камеры; выбрана камера 1,
-            # а читается нулевая; вернули веб-камеру после телефона — картинки нет
-            # совсем, и ни одной ошибки при этом не показано. Поэтому источник
-            # меняем только через полный перезапуск захвата.
-            src = c.source.strip()
-            if not src:
-                # пустое поле — не источник; молча ставить «0» тоже нельзя,
-                # иначе человек не поймёт, почему открылась не та камера
-                v.error = "Источник не указан. Впиши 0, phone или ссылку rtsp://…"
-            elif src != v.source:
+        # Каждая камера — в своей попытке: если с одной что-то пошло не так
+        # (например, она как раз отключилась), это не должно мешать применить
+        # настройки второй и не должно ронять весь запрос с 500-й ошибкой.
+        try:
+            if c.source is not None:
+                # Источник читается один раз, при открытии захвата: какой поток запустить
+                # и какую камеру открыть, решается в самом начале. Поменять одну строку
+                # мало — служба продолжит читать то, что открыла раньше. Так и выходило:
+                # в панели выбран телефон, а кадры идут с веб-камеры; выбрана камера 1,
+                # а читается нулевая; вернули веб-камеру после телефона — картинки нет
+                # совсем, и ни одной ошибки при этом не показано. Поэтому источник
+                # меняем только через полный перезапуск захвата.
+                src = c.source.strip()
+                if not src:
+                    # пустое поле — не источник; молча ставить «0» тоже нельзя,
+                    # иначе человек не поймёт, почему открылась не та камера
+                    v.error = "Источник не указан. Впиши 0, phone или ссылку rtsp://…"
+                elif src != v.source:
+                    was = v.running
+                    v.stop()
+                    v.source = src
+                    v.error = None      # прежняя жалоба была про прежний источник
+                    if was:
+                        v.start()
+            if c.check_color is not None:
+                v.check_color = c.check_color
+            if c.expect_color is not None:
+                want = c.expect_color.strip().lower()
+                known = {n for _, _, n in HUES} | {"серый", "белый", "чёрный"}
+                v.expect_color = want if want in known else ""
+            if c.mirror is not None and not v.is_phone:
+                # Когда источник — телефон, зеркалить нельзя: сервер отразил бы кадр
+                # ДО распознавания, а телефон рисует рамки поверх своего, неотражённого
+                # видео — все рамки уехали бы по горизонтали.
+                v.mirror = c.mirror
+            if c.conf is not None:
+                v.conf = max(0.05, min(0.95, c.conf))
+            if c.line_pos is not None:
+                v.line_pos = max(0.02, min(0.98, c.line_pos))
+            if c.line_orient in ("v", "h"):
+                v.line_orient = c.line_orient
+            if c.only is not None:
+                wanted = [s.strip().lower() for s in c.only.split(",") if s.strip()]
+                # разрешаем писать по-русски: переводим обратно в исходные имена модели
+                back = {name: k for k, name in RU.items()}
+                v.only = {back.get(x, x) for x in wanted}
+            if c.model and c.model != v.model_name:
                 was = v.running
                 v.stop()
-                v.source = src
-                v.error = None      # прежняя жалоба была про прежний источник
+                v.load_model(c.model)
                 if was:
                     v.start()
-        if c.check_color is not None:
-            v.check_color = c.check_color
-        if c.expect_color is not None:
-            want = c.expect_color.strip().lower()
-            known = {n for _, _, n in HUES} | {"серый", "белый", "чёрный"}
-            v.expect_color = want if want in known else ""
-        if c.mirror is not None and not v.is_phone:
-            # Когда источник — телефон, зеркалить нельзя: сервер отразил бы кадр
-            # ДО распознавания, а телефон рисует рамки поверх своего, неотражённого
-            # видео — все рамки уехали бы по горизонтали.
-            v.mirror = c.mirror
-        if c.conf is not None:
-            v.conf = max(0.05, min(0.95, c.conf))
-        if c.line_pos is not None:
-            v.line_pos = max(0.02, min(0.98, c.line_pos))
-        if c.line_orient in ("v", "h"):
-            v.line_orient = c.line_orient
-        if c.only is not None:
-            wanted = [s.strip().lower() for s in c.only.split(",") if s.strip()]
-            # разрешаем писать по-русски: переводим обратно в исходные имена модели
-            back = {name: k for k, name in RU.items()}
-            v.only = {back.get(x, x) for x in wanted}
-        if c.model and c.model != v.model_name:
-            was = v.running
-            v.stop()
-            v.load_model(c.model)
-            if was:
-                v.start()
+        except Exception as e:
+            v.error = f"Не удалось применить настройки для камеры {v.name}: {e}"
     return CAMS["A"].stats()
 
 
