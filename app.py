@@ -335,7 +335,11 @@ class Vision:
         self.names: dict[int, str] = {}
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.source = "0"            # "0" = веб-камера | "phone" | rtsp://...
+        # "0" = веб-камера | "phone" | rtsp://...
+        # Разные камеры по умолчанию берут разные устройства. Иначе обе целятся
+        # в нулевое: запускаешь вторую — и две камеры дерутся за один и тот же
+        # аппарат, вместо двух сторон конвейера получается одна.
+        self.source = "0" if name == "A" else "1"
         self.mirror = True           # зеркалить картинку (для веб-камеры так привычнее)
         self.stream_width = 960      # ширина картинки в браузере
         # Рисование рамок + JPEG-кодирование превью — тяжёлая, держащая GIL
@@ -344,7 +348,14 @@ class Vision:
         # процессорное время у потока распознавания сильнее, чем стоит
         # плавность картинки в браузере — на счёт и на сам детект превью
         # не влияет никак, это просто картинка для десктопной панели.
-        self.show_gap = 1 / 28       # не чаще 28 обновлений превью в секунду
+        # Потолок частоты превью. Ставить его близко к частоте камеры нельзя:
+        # было 1/28, то есть шаг 35.7 мс, а камера на 30 к/с даёт кадр каждые
+        # 33.3 мс — каждый кадр приходил чуть раньше разрешённого и отбрасывался.
+        # До экрана доходил примерно каждый третий: замерено 10.1 к/с при живых
+        # 29 распознаваниях в секунду. Потолок должен быть заведомо выше любой
+        # настоящей камеры и защищать только от лавины кадров с телефона,
+        # который шлёт их сотнями в секунду.
+        self.show_gap = 1 / 60
         self._shown_at = 0.0
         self.conf = 0.45             # порог уверенности
         self.line_pos = 0.5          # положение «ворот», 0..1
@@ -469,6 +480,13 @@ class Vision:
     def is_phone(self) -> bool:
         return self.source.strip().lower() == "phone"
 
+    @property
+    def feeding(self) -> bool:
+        """Идут ли кадры прямо сейчас — независимо от того, что за источник.
+        Не то же самое, что running: захват может быть запущен, а картинки нет
+        (камеру занял кто-то другой, телефон свернули, отвалился rtsp)."""
+        return self.running and self._rate(self.hist_video) > 0
+
     # ── модель ────────────────────────────────────────────────────────────────
     def load_model(self, name: str):
         """Своя обученная модель ищется в models/, готовая — скачается сама."""
@@ -545,6 +563,15 @@ class Vision:
             self.boxes = []
         self._save_state(force=True)      # остановились — счёт на диск
 
+    @staticmethod
+    def _is_mjpg(cap) -> bool:
+        """Правда ли камера отдаёт сжатый поток. Просьбу о MJPG бэкенд может
+        принять молча и не выполнить — верить надо только тому, что вернулось."""
+        v = int(cap.get(cv2.CAP_PROP_FOURCC))
+        if v <= 0:
+            return False
+        return ''.join(chr((v >> (8 * i)) & 0xFF) for i in range(4)).upper() == "MJPG"
+
     def _open_capture(self):
         src = self.source.strip()
         if src.isdigit():
@@ -559,16 +586,35 @@ class Vision:
             # прогонах подряд без единого пропуска. Поэтому пробуем его первым,
             # а прежний путь оставляем запасным — на случай камеры, которой
             # DirectShow не подойдёт.
+            # Но быстрое открытие ничего не стоит, если камера потом отдаёт втрое
+            # меньше кадров. DirectShow на встроенной камере молча игнорирует
+            # просьбу про MJPG и переключается на несжатый YUY2, а его шина тянет
+            # лишь 10 к/с: замерено 10.2 к/с против 29.8 у остальных бэкендов, при
+            # одном и том же разрешении и освещении. Ни явная частота, ни другой
+            # порядок вызовов этого не меняют.
+            # Поэтому не выбираем бэкенд заранее, а проверяем, что получилось:
+            # формат должен оказаться сжатым. Если нет — открываем по-другому.
             idx = int(src)
-            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-            if not cap.isOpened():
-                cap.release()
+            cap = None
+            for backend in (cv2.CAP_DSHOW, None):
+                c = cv2.VideoCapture(idx, backend) if backend else cv2.VideoCapture(idx)
+                if not c.isOpened():
+                    c.release()
+                    continue
+                # MJPG вместо несжатого потока — камера отдаёт заметно ровнее
+                c.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                # 960x540: YOLO всё равно ужимает кадр до 640, зато вдвое меньше пикселей
+                c.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+                c.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
+                cap = c
+                if backend is None or self._is_mjpg(c):
+                    break
+                # сжатия не вышло — пробуем следующий, но этот держим про запас,
+                # чтобы при неудаче остаться хоть с какой-то картинкой
+                cap = None
+                c.release()
+            if cap is None:
                 cap = cv2.VideoCapture(idx)
-            # MJPG вместо несжатого потока — камера отдаёт заметно ровнее
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-            # 960x540: YOLO всё равно ужимает кадр до 640, зато вдвое меньше пикселей
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
         else:
             cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # не копим задержку
@@ -654,15 +700,35 @@ class Vision:
             return
         self._shown_at = ts
 
-        # рисуем последнюю известную разметку на копии и публикуем
+        # Сперва уменьшаем, потом рисуем. Раньше было наоборот, и рамки с
+        # подписями рисовались по полному кадру — лишняя работа на каждом кадре.
+        #
+        # Ужимаем по ДЛИННОЙ стороне, а не по ширине. С шириной телефон в
+        # вертикальном положении проскакивал мимо: кадр 960x1707 — это 1.64 Мп,
+        # но 960 не больше 960, и уменьшение не срабатывало ни разу. Копирование,
+        # отрисовка и сжатие шли по полному кадру: замерено 21-23 мс на кадр,
+        # около 440 мс в секунду, и поток распознавания оставался без процессора —
+        # 3 распознавания в секунду вместо двадцати.
+        h, w = frame.shape[:2]
+        long_side = max(h, w)
+        if long_side > self.stream_width:
+            k = self.stream_width / long_side
+            shown = cv2.resize(frame, (max(1, int(w * k)), max(1, int(h * k))),
+                               interpolation=cv2.INTER_AREA)
+        else:
+            shown = frame.copy()        # копия обязательна: рисуем поверх
+
         with self.boxes_lock:
             boxes = self.boxes
-        shown = self._draw(frame.copy(), boxes)
+        # рамки приходят в координатах исходного кадра — переводим в размер превью.
+        # По каждой оси свой множитель: после округления сторон они чуть
+        # расходятся, и общий на обе увёл бы рамку на пиксель вбок.
+        if shown.shape[0] != h:
+            sx, sy = shown.shape[1] / w, shown.shape[0] / h
+            boxes = [(int(b[0] * sx), int(b[1] * sy), int(b[2] * sx), int(b[3] * sy)) + tuple(b[4:])
+                     for b in boxes]
+        shown = self._draw(shown, boxes)
 
-        h, w = shown.shape[:2]
-        if w > self.stream_width:
-            k = self.stream_width / w
-            shown = cv2.resize(shown, (self.stream_width, int(h * k)), interpolation=cv2.INTER_AREA)
         ok, buf = cv2.imencode(".jpg", shown, [cv2.IMWRITE_JPEG_QUALITY, 75])
         self.t_draw = self.t_draw * 0.9 + (time.perf_counter() - ts) * 1000 * 0.1
 
@@ -957,6 +1023,10 @@ def cam(name: str | None = None) -> Vision:
 
 
 class Config(BaseModel):
+    # Источник — единственная настройка, которая у камер РАЗНАЯ: это, собственно,
+    # и есть сама камера. Две камеры по бокам конвейера — это две разные ссылки
+    # rtsp:// или два разных номера устройства. Поэтому у source есть адресат.
+    cam: str | None = None
     source: str | None = None
     conf: float | None = None
     line_pos: float | None = None
@@ -1091,12 +1161,44 @@ async def ws_camera(ws: WebSocket, cam_name: str = Query("A", alias="cam")):
         v.phone_connected = False
 
 
+@app.websocket("/ws/view")
+async def ws_view(ws: WebSocket, cam_name: str = Query("A", alias="cam")):
+    """
+    Те же готовые кадры, что и на /stream, но по сокету.
+
+    Смысл ровно один — вкладка браузера перестаёт вечно «грузиться». Картинку
+    MJPEG браузер тянет через <img>, а такое соединение никогда не завершается:
+    пока идёт видео, страница для браузера всё ещё загружается, и вместо кнопки
+    перезагрузки крутится кружок. У сокета этого нет.
+
+    Быстрее от этого не становится: кадр сервер готовит и жмёт в JPEG один раз,
+    здесь он уходит теми же самыми байтами. Замерено — см. README.
+    """
+    await ws.accept()
+    v = cam(cam_name)
+    last = -1
+    try:
+        while True:
+            if v.frame_id == last:
+                await asyncio.sleep(0.004)
+                continue
+            with v.lock:
+                buf, last = v.jpeg, v.frame_id
+            if buf:
+                await ws.send_bytes(buf)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+
+
 @app.get("/stream")
 async def stream(cam_name: str = Query("A", alias="cam")):
     """
     MJPEG-поток: браузер показывает его обычным <img>.
     Генератор именно async: синхронный uvicorn гоняет через пул потоков,
     и на каждый кадр набегает лишний перескок между потоками — отсюда дёрганье.
+
+    Остаётся рабочим: удобно открыть поток прямо в отдельной вкладке или
+    показать его чем-то посторонним. Панель же смотрит через /ws/view.
     """
     v = cam(cam_name)
 
@@ -1138,7 +1240,7 @@ def cams():
             "running": s["running"], "error": s["error"], "source": s["source"],
             "model": s["model"], "fps": s["fps"], "fps_detect": s["fps_detect"],
             "counts": s["counts"], "total_in": s["total_in"], "total_out": s["total_out"],
-            "phone": s["phone"],
+            "phone": s["phone"], "feeding": v.feeding,
             "capturing": v.capturing, "capture_name": v.capture_name,
             "capture_count": v.capture_count, "capture_skipped": v.capture_skipped,
         }
@@ -1188,8 +1290,14 @@ def capture_both(c: CaptureBothCfg):
     """
     a, b = CAMS["A"], CAMS["B"]
     if c.active:
-        if not (a.phone_connected and b.phone_connected):
-            return fail("Обе камеры должны быть подключены — открой /phone на обоих телефонах.")
+        # Готовность — это «идут кадры», а не «подключён телефон». Раньше здесь
+        # стояло phone_connected, и со ссылками rtsp:// или веб-камерами съёмку
+        # нельзя было включить вообще: телефона нет, значит «не подключено».
+        # А на конвейере как раз камеры, а не телефоны.
+        for v in (a, b):
+            if not v.feeding:
+                return fail(f"Камера {v.name} не даёт кадров. "
+                            f"Проверь источник «{v.source}» и нажми «Запустить».")
         name = c.name or a.capture_name
         a.capture_start(name)
         b.capture_start(name)
@@ -2290,6 +2398,33 @@ def reset(cam_name: str = Query("A", alias="cam")):
     return {"ok": True}
 
 
+def _set_source(v: Vision, src: str):
+    """
+    Сменить источник одной камеры.
+
+    Источник читается один раз, при открытии захвата: какой поток запустить и
+    какую камеру открыть, решается в самом начале. Поменять одну строку мало —
+    служба продолжит читать то, что открыла раньше. Так и выходило: в панели
+    выбран телефон, а кадры идут с веб-камеры; выбрана камера 1, а читается
+    нулевая; вернули веб-камеру после телефона — картинки нет совсем, и ни
+    одной ошибки при этом не показано. Поэтому только через полный перезапуск.
+    """
+    src = src.strip()
+    if not src:
+        # пустое поле — не источник; молча ставить «0» тоже нельзя,
+        # иначе человек не поймёт, почему открылась не та камера
+        v.error = "Источник не указан. Впиши 0, phone или ссылку rtsp://…"
+        return
+    if src == v.source:
+        return
+    was = v.running
+    v.stop()
+    v.source = src
+    v.error = None          # прежняя жалоба была про прежний источник
+    if was:
+        v.start()
+
+
 @app.post("/config")
 def config(c: Config):
     """
@@ -2298,32 +2433,20 @@ def config(c: Config):
     список классов и цвет всегда должны совпадать. Раздельные остаются только
     счёт и источник запуска/остановки (/start, /stop, /reset, /capture) —
     вот их для сравнения двух камер как раз нельзя схлопывать в одно.
+
+    Исключение — сам источник: он у каждой камеры свой и меняется только у той,
+    что названа в поле cam. Раньше он тоже шёл в обе, и две камеры по бокам
+    конвейера были невозможны в принципе: вторая ссылка rtsp:// затирала первую,
+    обе камеры показывали одну и ту же сторону.
     """
+    if c.source is not None:
+        _set_source(cam(c.cam), c.source)
+
     for v in CAMS.values():
         # Каждая камера — в своей попытке: если с одной что-то пошло не так
         # (например, она как раз отключилась), это не должно мешать применить
         # настройки второй и не должно ронять весь запрос с 500-й ошибкой.
         try:
-            if c.source is not None:
-                # Источник читается один раз, при открытии захвата: какой поток запустить
-                # и какую камеру открыть, решается в самом начале. Поменять одну строку
-                # мало — служба продолжит читать то, что открыла раньше. Так и выходило:
-                # в панели выбран телефон, а кадры идут с веб-камеры; выбрана камера 1,
-                # а читается нулевая; вернули веб-камеру после телефона — картинки нет
-                # совсем, и ни одной ошибки при этом не показано. Поэтому источник
-                # меняем только через полный перезапуск захвата.
-                src = c.source.strip()
-                if not src:
-                    # пустое поле — не источник; молча ставить «0» тоже нельзя,
-                    # иначе человек не поймёт, почему открылась не та камера
-                    v.error = "Источник не указан. Впиши 0, phone или ссылку rtsp://…"
-                elif src != v.source:
-                    was = v.running
-                    v.stop()
-                    v.source = src
-                    v.error = None      # прежняя жалоба была про прежний источник
-                    if was:
-                        v.start()
             if c.check_color is not None:
                 v.check_color = c.check_color
             if c.expect_color is not None:

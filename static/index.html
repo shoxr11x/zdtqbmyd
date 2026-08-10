@@ -32,7 +32,7 @@
 
   #stage{position:relative;background:#000;border-radius:11px;overflow:hidden;aspect-ratio:16/9;
          display:flex;align-items:center;justify-content:center}
-  #stage img{width:100%;height:100%;object-fit:contain;display:none}
+  #stage canvas{width:100%;height:100%;object-fit:contain;display:none}
   #ph{color:var(--muted);text-align:center;padding:30px;font-size:15px;line-height:1.7}
 
   .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
@@ -81,7 +81,7 @@
 
   /* Съёмка с двух камер */
   .dualstage{position:relative;background:#000;border-radius:9px;overflow:hidden;aspect-ratio:4/3}
-  .dualstage img{width:100%;height:100%;object-fit:contain;display:block}
+  .dualstage canvas{width:100%;height:100%;object-fit:contain;display:block}
   .camlabel{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);margin-bottom:6px}
   .camdot{width:8px;height:8px;border-radius:50%;background:var(--bad);box-shadow:0 0 6px var(--bad);flex:none}
   .camdot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
@@ -125,7 +125,7 @@
     <div class="card">
       <h2>Видео · рамки, ID и «ворота»</h2>
       <div id="stage">
-        <img id="video" alt="поток">
+        <canvas id="video"></canvas>
         <div id="ph">📷 Нажми «Запустить» — YOLO начнёт находить объекты,<br>
           вести каждый по ID и считать пересечения жёлтой линии.</div>
       </div>
@@ -173,12 +173,12 @@
       <div class="totals">
         <div>
           <div class="camlabel"><span class="camdot" id="camDotA"></span>Камера A</div>
-          <div class="dualstage"><img id="dualImgA" alt="камера A"></div>
+          <div class="dualstage"><canvas id="dualImgA"></canvas></div>
           <div class="hint" id="dualStateA" style="margin-top:6px">не подключена</div>
         </div>
         <div>
           <div class="camlabel"><span class="camdot" id="camDotB"></span>Камера B</div>
-          <div class="dualstage"><img id="dualImgB" alt="камера B"></div>
+          <div class="dualstage"><canvas id="dualImgB"></canvas></div>
           <div class="hint" id="dualStateB" style="margin-top:6px">не подключена</div>
         </div>
       </div>
@@ -189,7 +189,8 @@
         <button class="primary big" id="dualRec" disabled>● Снимать</button>
       </div>
       <div class="hint" id="dualRecHint">
-        Нужны обе камеры: открой <code>/phone</code> на первом телефоне и <code>/phone?cam=B</code> на втором.
+        Каждой камере — свой источник в «Источник и модель»: две ссылки <code>rtsp://…</code>
+        с разных сторон конвейера. С телефонов — <code>/phone</code> и <code>/phone?cam=B</code>.
       </div>
     </div>
 
@@ -279,12 +280,20 @@
   <div>
     <div class="card">
       <h2>Источник и модель</h2>
+      <!-- Источник — единственная настройка, разная у камер: это и есть сама
+           камера. Всё остальное ниже (модель, порог, цвет) общее на обе. -->
+      <label class="f">Чей источник настраиваем</label>
+      <div class="seg">
+        <button id="whichA" class="act">Камера A</button>
+        <button id="whichB">Камера B</button>
+      </div>
       <div class="seg">
         <button id="srcCam" class="act">💻 Веб-камера</button>
         <button id="srcPhone">📱 Телефон</button>
       </div>
       <label class="f">Камера (0 = встроенная), <code>phone</code> или ссылка RTSP</label>
       <input type="text" id="src" value="0" placeholder="0  ·  phone  ·  rtsp://user:pass@192.168.1.50:554/stream">
+      <div class="hint" id="srcOther"></div>
       <div class="hint" id="phoneHint" style="display:none">
         Набери на телефоне <b id="phoneUrl">vision.local/phone</b> и нажми там «Включить камеру».
         Сервис переключится на телефон сам. <span id="phoneState" style="color:var(--muted)">телефон не подключён</span>
@@ -370,6 +379,7 @@
 const $ = id => document.getElementById(id);
 let running = false, orient = 'v', mirror = true;
 let trainBusy = false;   // идёт ли сейчас обучение — тогда камеру запускать нельзя
+const defaultHint = $('hint').innerHTML;   // текст подсказки до того, как в неё впервые впишут ошибку
 
 // ── управление ────────────────────────────────────────────────────────────
 async function post(url, body){
@@ -388,11 +398,11 @@ $('bStart').onclick = async () => {
     $('src').focus();
     return;
   }
-  await cfg({source:src, conf:$('conf').value/100, mirror:mirror,
+  await cfg({source:src, cam:srcWhich, conf:$('conf').value/100, mirror:mirror,
              line_pos:$('pos').value/100, line_orient:orient, only:$('only').value});
   $('bStart').disabled = true;
-  await post('/start');
-  $('video').src = '/stream?' + Date.now();
+  await post('/start?cam=' + srcWhich);
+  viewMain.setCam(srcWhich); viewMain.start();
   $('video').style.display = 'block';
   $('ph').style.display = 'none';
   $('bStop').disabled = false;
@@ -400,12 +410,14 @@ $('bStart').onclick = async () => {
 };
 
 $('bStop').onclick = async () => {
-  await post('/stop');
-  $('video').src = ''; $('video').style.display='none'; $('ph').style.display='block';
+  await post('/stop?cam=' + srcWhich);
+  viewMain.stop(); $('video').style.display='none'; $('ph').style.display='block';
   $('bStart').disabled = false; $('bStop').disabled = true; running = false;
 };
 
-$('bReset').onclick = () => post('/reset');
+// Сброс — только у выбранной камеры. Общего сброса нет нарочно: сравнивать
+// показания A и B можно, только если счёт у обеих набран за один отрезок.
+$('bReset').onclick = () => post('/reset?cam=' + srcWhich);
 
 $('conf').oninput = e => { $('confV').textContent = e.target.value+'%'; cfg({conf:e.target.value/100}); };
 $('pos').oninput  = e => { $('posV').textContent  = e.target.value+'%'; cfg({line_pos:e.target.value/100}); };
@@ -422,6 +434,19 @@ $('src').onchange = () => {
   const v = $('src').value.trim();
   if(v) setSource(v); else $('src').value = '0';
 };
+// Какой камере сейчас правим источник. У каждой он свой — это, собственно, и
+// есть сама камера: две стороны конвейера — две разные ссылки rtsp://.
+let srcWhich = 'A';
+$('whichA').onclick = () => setWhich('A');
+$('whichB').onclick = () => setWhich('B');
+function setWhich(w){
+  srcWhich = w;
+  $('whichA').classList.toggle('act', w === 'A');
+  $('whichB').classList.toggle('act', w === 'B');
+  const known = lastCams && lastCams[w];
+  if(known) setSource(known.source, true);      // показать то, что стоит у неё
+}
+
 // quiet = раскладываем то, что уже стоит на сервере, — обратно слать нечего
 function setSource(v, quiet){
   $('src').value = v;
@@ -432,7 +457,7 @@ function setSource(v, quiet){
   // зеркало у телефона только ломает рамки: сервер зеркалит кадр до детекции,
   // а рамки телефон рисует поверх своего, незеркального видео
   $('mirrorBox').style.display = isPhone ? 'none' : 'block';
-  if(!quiet) cfg({source:v});
+  if(!quiet) cfg({source:v, cam:srcWhich});
 }
 function setMirror(v, quiet){
   mirror = v;
@@ -469,7 +494,7 @@ function applyServerState(s){
   if(typeof s.expect_color === 'string') $('expColor').value = s.expect_color;
   // сервис уже считает — показываем поток, а не заглушку
   if(s.running && !running){
-    $('video').src = '/stream?' + Date.now();
+    viewMain.setCam(srcWhich); viewMain.start();
     $('video').style.display = 'block';
     $('ph').style.display = 'none';
     $('bStart').disabled = true;
@@ -508,7 +533,8 @@ loadModels();
 // ── опрос статистики ──────────────────────────────────────────────────────
 async function tick(){
   try{
-    const s = await (await fetch('/stats')).json();
+    // главная карточка показывает ту камеру, что выбрана в «Источник и модель»
+    const s = await (await fetch('/stats?cam=' + srcWhich)).json();
 
     if(!stateLoaded){ stateLoaded = true; applyServerState(s); }
 
@@ -562,7 +588,16 @@ async function tick(){
     // ошибка
     const h = $('hint');
     if(s.error){ h.classList.add('err'); h.textContent = '⚠ ' + s.error; }
-    else if(h.classList.contains('err')){ location.reload(); }
+    else if(h.classList.contains('err')){
+      // Ошибка ушла — раньше тут стояла полная перезагрузка страницы (нужна
+      // была, чтобы пересоздать зависший на оборванном соединении видеопоток).
+      // С двумя телефонами, которые то отключаются, то снова на связи, это
+      // превращалось в постоянные перезагрузки на каждый такой блип. Вместо
+      // всей страницы пересоздаём только сам видеопоток.
+      h.classList.remove('err');
+      h.innerHTML = defaultHint;
+      if(s.running) viewMain.setCam(srcWhich); viewMain.start();
+    }
 
     if(!s.running && running){
       running=false; $('bStart').disabled=trainBusy; $('bStop').disabled=true;
@@ -575,10 +610,50 @@ setInterval(tick, 700); tick();
 // Видео тут не запускаем сами: камеры выходят на связь, когда на телефонах
 // открывают /phone и /phone?cam=B (см. /ws/camera) — здесь только показываем
 // то, что уже идёт на /stream, и включаем совместную съёмку.
-$('dualImgA').src = '/stream?cam=A';
-$('dualImgB').src = '/stream?cam=B';
+// ── показ видео: сокет + канвас вместо <img src="/stream"> ──────────────────
+// Картинку MJPEG браузер тянет через <img>, и такое соединение никогда не
+// завершается: пока идёт видео, вкладка для браузера всё ещё «загружается» —
+// вместо кнопки перезагрузки крутится кружок. У сокета этого нет.
+// Быстрее от этого не становится: замерено 10.2 к/с у обоих транспортов при
+// одинаковом шаге и разбросе, навес на кадр 70 байт против 6 — 0.15% от кадра.
+// Сервер отдаёт те же самые готовые байты, что и на /stream.
+function viewer(canvasId, camName){
+  const cv = $(canvasId), ctx = cv.getContext('2d', {alpha:false});
+  let ws = null, stopped = false, timer = null;
+
+  async function draw(blob){
+    const bmp = await createImageBitmap(blob);
+    if(cv.width !== bmp.width || cv.height !== bmp.height){
+      cv.width = bmp.width; cv.height = bmp.height;
+    }
+    ctx.drawImage(bmp, 0, 0);
+    bmp.close();
+  }
+  function open(){
+    if(stopped) return;
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws/view?cam=${camName}`);
+    ws.binaryType = 'blob';
+    ws.onmessage = e => draw(e.data);
+    // сервер перезапускали или сеть моргнула — поднимаемся сами, без перезагрузки
+    ws.onclose = () => { if(!stopped){ clearTimeout(timer); timer = setTimeout(open, 1000); } };
+  }
+  return {
+    start(){ stopped = false; if(!ws || ws.readyState > 1) open(); },
+    stop(){ stopped = true; clearTimeout(timer); if(ws) try{ ws.close(); }catch(e){} ws = null; },
+    // главное окно показывает ту камеру, что выбрана в «Источник и модель»
+    setCam(n){ if(n === camName) return; camName = n; if(ws) try{ ws.close(); }catch(e){} ws = null; },
+  };
+}
+
+const viewMain = viewer('video', 'A');
+viewer('dualImgA', 'A').start();
+viewer('dualImgB', 'B').start();
 
 let dualCapturing = false, dualConnA = false, dualConnB = false;
+// последнее, что известно про обе камеры: нужно и карточке съёмки,
+// и переключателю источника — второй раз то же самое не спрашиваем
+let lastCams = null;
 
 function dualNameError(v){
   if(!v)                                     return 'впиши имя детали, например rama';
@@ -618,11 +693,26 @@ async function dualTick(){
   try{ d = await (await fetch('/cams')).json(); }
   catch(e){ return; }
   const a = d.cams.A, b = d.cams.B;
-  dualConnA = !!a.phone; dualConnB = !!b.phone;
+  lastCams = d.cams;
+  // Готовность — это «идут кадры», а не «подключён телефон»: на конвейере
+  // источник это ссылка rtsp://, телефона там нет вовсе.
+  dualConnA = !!a.feeding; dualConnB = !!b.feeding;
+  // подсказка под полем источника: что стоит у той камеры, которую сейчас не правим
+  const other = srcWhich === 'A' ? 'B' : 'A';
+  $('srcOther').textContent = `У камеры ${other} сейчас: ${d.cams[other].source}`;
+  // Поле источника держим в согласии с сервером. Иначе показывает одно, а у
+  // камеры стоит другое: телефон, подключившись, переводит свою камеру на себя
+  // сам, и панель об этом не узнавала. Пока в поле печатают — не трогаем.
+  if(document.activeElement !== $('src') && d.cams[srcWhich].source !== $('src').value){
+    setSource(d.cams[srcWhich].source, true);
+  }
   $('camDotA').classList.toggle('on', dualConnA);
   $('camDotB').classList.toggle('on', dualConnB);
-  $('dualStateA').textContent = dualConnA ? 'подключена' : 'не подключена';
-  $('dualStateB').textContent = dualConnB ? 'подключена' : 'не подключена';
+  // говорим и про источник: с двумя камерами легко перепутать, какая где
+  const state = (v, on) => on ? `идут кадры · ${v.source}`
+                              : (v.running ? `нет кадров · ${v.source}` : `не запущена · ${v.source}`);
+  $('dualStateA').textContent = state(a, dualConnA);
+  $('dualStateB').textContent = state(b, dualConnB);
 
   dualCapturing = a.capturing && b.capturing;
   $('dualName').disabled = dualCapturing;
@@ -637,8 +727,10 @@ async function dualTick(){
   if(dualCapturing){
     h.innerHTML = `Снимаю: A — <b>${a.capture_count||0}</b>, B — <b>${b.capture_count||0}</b> кадров.`;
   }else if(!dualConnA || !dualConnB){
-    h.innerHTML = 'Нужны обе камеры: открой <code>/phone</code> на первом телефоне '
-                + 'и <code>/phone?cam=B</code> на втором.';
+    const dead = [!dualConnA && 'A', !dualConnB && 'B'].filter(Boolean).join(' и ');
+    h.innerHTML = `Нет кадров с камеры <b>${dead}</b>. Впиши ей источник в «Источник и модель» `
+                + '(ссылка <code>rtsp://…</code> или номер веб-камеры) и нажми «Запустить». '
+                + 'С телефонов — <code>/phone</code> и <code>/phone?cam=B</code>.';
   }else{
     h.innerHTML = 'Обе камеры на связи — можно снимать.';
   }
@@ -905,7 +997,7 @@ $('bTrain').onclick = async () => {
   // камеру гасим сами: видеокарта нужна обучению целиком
   if(running){
     await post('/stop');
-    $('video').src=''; $('video').style.display='none'; $('ph').style.display='block';
+    viewMain.stop(); $('video').style.display='none'; $('ph').style.display='block';
     $('bStop').disabled = true; running = false;
   }
   trainPending = Date.now();

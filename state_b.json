@@ -519,7 +519,7 @@
    "color_ok": true
   }
  ],
- "model": "parts.pt",
+ "model": "yolo11m.pt",
  "expect_color": "",
- "saved": "08.08 22:09:47"
+ "saved": "10.08 23:22:49"
 }
