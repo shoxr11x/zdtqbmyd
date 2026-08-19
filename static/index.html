@@ -24,16 +24,18 @@
   .badge{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 11px;font-size:12px;color:var(--muted)}
   .badge b{color:var(--text)}
 
-  .wrap{display:grid;grid-template-columns:1fr 400px;gap:18px;padding:18px;max-width:1500px;margin:0 auto;align-items:start}
+  .wrap{display:grid;grid-template-columns:1fr 370px;gap:16px;padding:16px;max-width:1920px;margin:0 auto;align-items:start}
   @media(max-width:1050px){.wrap{grid-template-columns:1fr}}
 
   .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px}
   .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);margin:0 0 13px;font-weight:600}
 
-  #stage{position:relative;background:#000;border-radius:11px;overflow:hidden;aspect-ratio:16/9;
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:820px){.pair{grid-template-columns:1fr}}
+  #stage,#stageB{position:relative;background:#000;border-radius:11px;overflow:hidden;aspect-ratio:16/9;
          display:flex;align-items:center;justify-content:center}
-  #stage canvas{width:100%;height:100%;object-fit:contain;display:none}
-  #ph{color:var(--muted);text-align:center;padding:30px;font-size:15px;line-height:1.7}
+  #stage canvas,#stageB canvas{width:100%;height:100%;object-fit:contain;display:none}
+  #ph{color:var(--muted);text-align:center;padding:22px 10px 0;font-size:14px;line-height:1.7}
 
   .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
   button{padding:10px 16px;border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;
@@ -50,6 +52,7 @@
   .slider span{font-size:12px;color:var(--muted);min-width:74px}
   .slider input{flex:1}
   .slider b{min-width:44px;text-align:right;color:var(--accent);font-size:13px}
+  .creds{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .seg{display:flex;gap:6px;margin-top:8px}
   .seg button{flex:1;padding:8px;font-size:13px}
   .seg button.act{background:var(--accent);color:#04121f;border-color:var(--accent)}
@@ -124,16 +127,56 @@
   <div>
     <div class="card">
       <h2>Видео · рамки, ID и «ворота»</h2>
-      <div id="stage">
-        <canvas id="video"></canvas>
-        <div id="ph">📷 Нажми «Запустить» — YOLO начнёт находить объекты,<br>
-          вести каждый по ID и считать пересечения жёлтой линии.</div>
+      <!-- Две камеры рядом: это основной режим работы, а не отдельная
+           карточка. Каждая со своими воротами и своим счётом. -->
+      <div class="pair">
+        <div>
+          <div class="camlabel"><span class="camdot" id="dotA"></span>Камера A · сверху · проверка</div>
+          <div id="stage"><canvas id="video"></canvas></div>
+          <div class="hint" id="dualStateA" style="margin-top:6px">камера A</div>
+        </div>
+        <div>
+          <div class="camlabel"><span class="camdot" id="dotB"></span>Камера B · сбоку · СЧЁТ</div>
+          <div id="stageB"><canvas id="videoB"></canvas></div>
+          <div class="hint" id="dualStateB" style="margin-top:6px">камера B</div>
+        </div>
       </div>
+      <div id="ph">📷 Нажми «Запустить» — YOLO начнёт находить детали,<br>
+        вести каждую по ID и считать пересечения жёлтой линии.</div>
       <div class="row">
-        <button class="primary" id="bStart">▶ Запустить</button>
-        <button id="bStop" disabled>⏸ Остановить</button>
+        <button class="primary" id="bStart">▶ Запустить обе</button>
+        <button id="bStop" disabled>⏸ Остановить обе</button>
         <button class="danger" id="bReset">🔄 Сбросить счёт</button>
       </div>
+
+      <!-- Съёмка датасета здесь же: снимают ровно то, что видно на этих двух
+           окнах, и разносить это по разным карточкам незачем. -->
+      <div class="creds">
+        <div>
+          <label class="f">Имя детали — общее на обе камеры</label>
+          <input type="text" id="dualName" value="detal" placeholder="например disk"
+                 autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
+        <div>
+          <label class="f">Как часто брать кадр</label>
+          <select id="dualGap">
+            <option value="0.2">часто — 5 кадров в секунду</option>
+            <option value="0.5" selected>обычно — 2 кадра в секунду</option>
+            <option value="1">раз в секунду</option>
+            <option value="2">раз в 2 секунды</option>
+            <option value="5">раз в 5 секунд</option>
+          </select>
+        </div>
+      </div>
+      <div class="hint" id="gapHint"></div>
+      <div class="row">
+        <button class="primary big" id="dualRec" disabled>● Снимать с обеих камер</button>
+      </div>
+      <div class="hint" id="dualRecHint">
+        Каждой камере — свой источник в «Источник и модель»: две ссылки <code>rtsp://…</code>
+        с разных сторон конвейера. С телефонов — <code>/phone</code> и <code>/phone?cam=B</code>.
+      </div>
+
       <div class="hint" id="hint">
         <b>Жёлтая линия — это «ворота».</b> Каждый объект получает свой номер (ID) и ведётся между кадрами.
         Когда центр объекта переходит линию — счётчик прибавляется, и только один раз: тот же предмет,
@@ -157,40 +200,16 @@
       <h2>Сверка камер · A vs B</h2>
       <div class="hint" id="camDiffStatus">—</div>
       <table>
-        <thead><tr><th>Класс</th><th style="text-align:right">A</th><th style="text-align:right">B</th><th style="text-align:right">расхождение</th></tr></thead>
+        <thead><tr><th>Класс</th><th style="text-align:right">A · проверка</th><th style="text-align:right">B · счёт</th><th style="text-align:right">расхождение</th></tr></thead>
         <tbody id="camDiffTbl"><tr><td colspan="4" class="empty">—</td></tr></tbody>
       </table>
       <div class="hint">
         Камеры смотрят на одни и те же детали — счёт с них НЕ складывается, а сравнивается.
         Расхождение — сигнал, что одна из камер что-то потеряла (например, трекер сбился у ворот
-        из-за плотно висящих рядом деталей), а не «на сколько их больше». Официальный счёт — камера A,
-        это то же число, что в «Итог по воротам» выше.
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Съёмка с двух камер</h2>
-      <div class="totals">
-        <div>
-          <div class="camlabel"><span class="camdot" id="camDotA"></span>Камера A</div>
-          <div class="dualstage"><canvas id="dualImgA"></canvas></div>
-          <div class="hint" id="dualStateA" style="margin-top:6px">не подключена</div>
-        </div>
-        <div>
-          <div class="camlabel"><span class="camdot" id="camDotB"></span>Камера B</div>
-          <div class="dualstage"><canvas id="dualImgB"></canvas></div>
-          <div class="hint" id="dualStateB" style="margin-top:6px">не подключена</div>
-        </div>
-      </div>
-      <label class="f">Имя детали — общее на обе камеры</label>
-      <input type="text" id="dualName" value="detal" placeholder="например rama"
-             autocapitalize="off" autocorrect="off" spellcheck="false">
-      <div class="row">
-        <button class="primary big" id="dualRec" disabled>● Снимать</button>
-      </div>
-      <div class="hint" id="dualRecHint">
-        Каждой камере — свой источник в «Источник и модель»: две ссылки <code>rtsp://…</code>
-        с разных сторон конвейера. С телефонов — <code>/phone</code> и <code>/phone?cam=B</code>.
+        из-за плотно висящих рядом деталей), а не «на сколько их больше».
+        <b>Официальный счёт — камера B</b>, это то же число, что в «Итог по воротам» выше.
+        Камера A сверху служит проверкой: если её счёт заметно расходится, значит одна из двух
+        не видит часть деталей, и доверять числу пока нельзя.
       </div>
     </div>
 
@@ -291,8 +310,30 @@
         <button id="srcCam" class="act">💻 Веб-камера</button>
         <button id="srcPhone">📱 Телефон</button>
       </div>
-      <label class="f">Камера (0 = встроенная), <code>phone</code> или ссылка RTSP</label>
-      <input type="text" id="src" value="0" placeholder="0  ·  phone  ·  rtsp://user:pass@192.168.1.50:554/stream">
+      <label class="f">Адрес камеры</label>
+      <input type="text" id="src" value="0" placeholder="172.16.20.7  ·  0  ·  phone">
+      <div class="hint">
+        Впиши <b>адрес камеры</b> — путь к потоку программа спросит у неё сама.
+        Ещё принимает <code>0</code> (встроенная веб-камера), <code>1</code> (следующая),
+        <code>phone</code> и готовую ссылку <code>rtsp://…</code>, если она уже известна.
+      </div>
+      <div id="credBox">
+        <div class="creds">
+          <div>
+            <label class="f">Логин камеры</label>
+            <!-- Значением, а не подсказкой: серое «admin» выглядит как
+                 заполненное поле, и человек не понимает, почему камера
+                 продолжает просить логин. -->
+            <input type="text" id="camUser" value="admin"
+                   autocapitalize="off" autocorrect="off" spellcheck="false">
+          </div>
+          <div>
+            <label class="f">Пароль камеры</label>
+            <input type="password" id="camPass" placeholder="••••••">
+          </div>
+        </div>
+      </div>
+      <div class="hint" id="srcState"></div>
       <div class="hint" id="srcOther"></div>
       <div class="hint" id="phoneHint" style="display:none">
         Набери на телефоне <b id="phoneUrl">vision.local/phone</b> и нажми там «Включить камеру».
@@ -305,8 +346,8 @@
            а телефон рисует рамки поверх своего незеркального видео — всё уезжает вбок -->
       <div id="mirrorBox">
         <div class="seg">
-          <button id="mirOn" class="act">🪞 зеркало</button>
-          <button id="mirOff">↔ как видит камера</button>
+          <button id="mirOn">🪞 зеркало</button>
+          <button id="mirOff" class="act">↔ как видит камера</button>
         </div>
         <div class="hint">
           Веб-камера отдаёт картинку не зеркаленной: двигаешь предмет вправо — на экране он идёт влево.
@@ -329,6 +370,9 @@
       <div class="slider">
         <span>Уверенность</span><input type="range" id="conf" min="10" max="90" value="45"><b id="confV">45%</b>
       </div>
+      <!-- Ворота у камер разные: они зависят от того, как в этом кадре идёт
+           деталь. Поэтому правим их у той камеры, что выбрана выше. -->
+      <div class="hint" id="gateWho" style="margin-top:10px">Ворота камеры A</div>
       <div class="slider">
         <span>Линия</span><input type="range" id="pos" min="5" max="95" value="50"><b id="posV">50%</b>
       </div>
@@ -336,12 +380,25 @@
         <button id="orV" class="act">│ вертикальная</button>
         <button id="orH">─ горизонтальная</button>
       </div>
+      <div class="seg">
+        <button id="dirNorm" class="act">→ как есть</button>
+        <button id="dirFlip">← перевернуть</button>
+      </div>
+      <div class="hint" id="dirHint"></div>
+      <div class="hint">
+        Линия ставится <b>поперёк движения детали в этом кадре</b>. У камеры сверху деталь
+        обычно уходит вглубь кадра — там нужна <b>горизонтальная</b>. У камеры сбоку деталь
+        едет слева направо — там <b>вертикальная</b>. У каждой камеры своя настройка.
+      </div>
       <label class="f">Считать только эти классы (через запятую, пусто = все)</label>
       <input type="text" id="only" placeholder="например: телефон, кружка, книга">
-      <div class="hint">
-        Ставь линию поперёк движения. На заводе это будет сечение конвейера — «ворота» перед мойкой,
-        сушкой, покраской.
+
+      <label class="f">Чем считать</label>
+      <div class="seg">
+        <button id="devGpu" class="act">⚡ Видеокарта</button>
+        <button id="devCpu">🐌 Процессор</button>
       </div>
+      <div class="hint" id="devHint"></div>
     </div>
 
     <div class="card">
@@ -377,7 +434,12 @@
 
 <script>
 const $ = id => document.getElementById(id);
-let running = false, orient = 'v', mirror = true;
+// зеркало по умолчанию выключено: на конвейере оно переворачивает
+// направление движения и путает «вперёд» с «назад»
+// Какая камера ведёт счёт. Вторая — контрольная: сравниваем её показания
+// с этими и по расхождению видим, что кто-то из них теряет детали.
+const COUNT_CAM = 'B', CHECK_CAM = 'A';
+let running = false, orient = 'v', mirror = false;
 let trainBusy = false;   // идёт ли сейчас обучение — тогда камеру запускать нельзя
 const defaultHint = $('hint').innerHTML;   // текст подсказки до того, как в неё впервые впишут ошибку
 
@@ -401,31 +463,73 @@ $('bStart').onclick = async () => {
   await cfg({source:src, cam:srcWhich, conf:$('conf').value/100, mirror:mirror,
              line_pos:$('pos').value/100, line_orient:orient, only:$('only').value});
   $('bStart').disabled = true;
-  await post('/start?cam=' + srcWhich);
-  viewMain.setCam(srcWhich); viewMain.start();
-  $('video').style.display = 'block';
-  $('ph').style.display = 'none';
+  // Запускаем обе: две камеры — основной режим, а не что-то отдельное.
+  // Камеру без источника сервер просто не поднимет и скажет почему.
+  await Promise.all(['A','B'].map(n => post('/start?cam=' + n)));
+  showBoth(true);
   $('bStop').disabled = false;
   running = true;
 };
 
+// Показать/спрятать оба окна разом
+function showBoth(on){
+  for(const [v, id] of [[viewA,'video'], [viewB,'videoB']]){
+    if(on) v.start(); else v.stop();
+    $(id).style.display = on ? 'block' : 'none';
+  }
+  $('ph').style.display = on ? 'none' : 'block';
+}
+
 $('bStop').onclick = async () => {
-  await post('/stop?cam=' + srcWhich);
-  viewMain.stop(); $('video').style.display='none'; $('ph').style.display='block';
+  await Promise.all(['A','B'].map(n => post('/stop?cam=' + n)));
+  showBoth(false);
   $('bStart').disabled = false; $('bStop').disabled = true; running = false;
 };
 
-// Сброс — только у выбранной камеры. Общего сброса нет нарочно: сравнивать
-// показания A и B можно, только если счёт у обеих набран за один отрезок.
-$('bReset').onclick = () => post('/reset?cam=' + srcWhich);
+// Сбрасываем обе разом: сравнивать показания A и B можно только тогда,
+// когда счёт у них набран за один и тот же отрезок времени.
+$('bReset').onclick = () => Promise.all(['A','B'].map(n => post('/reset?cam=' + n)));
 
 $('conf').oninput = e => { $('confV').textContent = e.target.value+'%'; cfg({conf:e.target.value/100}); };
-$('pos').oninput  = e => { $('posV').textContent  = e.target.value+'%'; cfg({line_pos:e.target.value/100}); };
+$('pos').oninput  = e => { $('posV').textContent  = e.target.value+'%';
+                           cfg({line_pos:e.target.value/100, cam:srcWhich}); };
+// Переворот направления. Нужен потому, что «вперёд» — это одно движение
+// конвейера, а не одна сторона кадра: сверху деталь уходит вглубь, сбоку идёт
+// поперёк. Без переворота одна камера пишет «вперёд», другая «назад» на одном
+// и том же проходе, и сверять их показания нельзя.
+$('dirNorm').onclick = () => setFlip(false);
+$('dirFlip').onclick = () => setFlip(true);
+function setFlip(v, quiet){
+  $('dirNorm').classList.toggle('act', !v);
+  $('dirFlip').classList.toggle('act', v);
+  $('dirHint').textContent = v
+    ? 'У этой камеры «вперёд» и «назад» поменяны местами.'
+    : 'У этой камеры направление как в кадре.';
+  if(!quiet) cfg({flip_dir: v, cam: srcWhich});
+}
+
 $('orV').onclick  = () => setOrient('v');
 $('orH').onclick  = () => setOrient('h');
 $('mirOn').onclick  = () => setMirror(true);
 $('mirOff').onclick = () => setMirror(false);
 $('expColor').onchange = () => cfg({expect_color: $('expColor').value});
+
+// Чем считать. Свойство машины, а не камеры, поэтому применяется к обеим.
+// Процессор нужен как запасной путь: пока видеокарта занята обучением,
+// распознавание на неё не помещается.
+$('devGpu').onclick = () => setDevice('cuda');
+$('devCpu').onclick = () => setDevice('cpu');
+function setDevice(d, quiet){
+  $('devGpu').classList.toggle('act', d === 'cuda');
+  $('devCpu').classList.toggle('act', d === 'cpu');
+  $('devHint').className = 'hint' + (d === 'cpu' ? ' warn' : '');
+  $('devHint').innerHTML = d === 'cuda'
+    ? 'Считает видеокарта. Замерено на этой машине: yolo11n — 7 мс на кадр, yolo11m — 10 мс.'
+    : 'Считает процессор — <b>в 6-18 раз медленнее</b>: yolo11n 46 мс на кадр вместо 7, '
+      + 'yolo11m 183 мс вместо 10. С двумя камерами счёт будет пропускать детали. '
+      + 'Имеет смысл только пока видеокарта занята обучением.';
+  if(!quiet) cfg({device:d});
+}
 $('srcCam').onclick   = () => setSource('0');
 $('srcPhone').onclick = () => setSource('phone');
 // Вписали индекс руками — применяем сразу, не дожидаясь «Запустить»:
@@ -434,6 +538,11 @@ $('src').onchange = () => {
   const v = $('src').value.trim();
   if(v) setSource(v); else $('src').value = '0';
 };
+// Логин и пароль уходят вместе с адресом: ссылка на поток собирается из всех
+// трёх сразу, поэтому по отдельности их слать бессмысленно.
+for(const id of ['camUser','camPass']){
+  $(id).onchange = () => { const v = $('src').value.trim(); if(v) setSource(v); };
+}
 // Какой камере сейчас правим источник. У каждой он свой — это, собственно, и
 // есть сама камера: две стороны конвейера — две разные ссылки rtsp://.
 let srcWhich = 'A';
@@ -444,7 +553,32 @@ function setWhich(w){
   $('whichA').classList.toggle('act', w === 'A');
   $('whichB').classList.toggle('act', w === 'B');
   const known = lastCams && lastCams[w];
-  if(known) setSource(known.source, true);      // показать то, что стоит у неё
+  if(known){
+    setSource(known.source, true);      // показать то, что стоит у неё
+    showCreds(known);
+    showGate(known);
+  }
+  $('gateWho').textContent = 'Ворота камеры ' + w;
+}
+
+// Ворота у каждой камеры свои — показываем те, что у выбранной
+function showGate(c){
+  if(typeof c.flip_dir === 'boolean') setFlip(c.flip_dir, true);
+  if(c.line_orient === 'v' || c.line_orient === 'h') setOrient(c.line_orient, true);
+  if(typeof c.line_pos === 'number' && document.activeElement !== $('pos')){
+    $('pos').value = Math.round(c.line_pos * 100);
+    $('posV').textContent = $('pos').value + '%';
+  }
+}
+
+// Логин показываем как есть, пароль — только признаком, что он сохранён.
+// Наружу сам пароль сервер не отдаёт: панель бывает открыта в цеху.
+function showCreds(c){
+  if(document.activeElement !== $('camUser')) $('camUser').value = c.cam_user || '';
+  if(document.activeElement !== $('camPass')){
+    $('camPass').value = '';
+    $('camPass').placeholder = c.has_pass ? 'сохранён — оставь пустым' : '••••••';
+  }
 }
 
 // quiet = раскладываем то, что уже стоит на сервере, — обратно слать нечего
@@ -457,7 +591,13 @@ function setSource(v, quiet){
   // зеркало у телефона только ломает рамки: сервер зеркалит кадр до детекции,
   // а рамки телефон рисует поверх своего, незеркального видео
   $('mirrorBox').style.display = isPhone ? 'none' : 'block';
-  if(!quiet) cfg({source:v, cam:srcWhich});
+  // Пароль шлём, только если его сейчас напечатали. Пустое поле значит
+  // «оставь сохранённый», иначе перезагрузка страницы стирала бы его.
+  if(!quiet){
+    const patch = {source:v, cam:srcWhich, user:$('camUser').value};
+    if($('camPass').value) patch.password = $('camPass').value;
+    cfg(patch);
+  }
 }
 function setMirror(v, quiet){
   mirror = v;
@@ -469,7 +609,7 @@ function setOrient(o, quiet){
   orient = o;
   $('orV').classList.toggle('act', o==='v');
   $('orH').classList.toggle('act', o==='h');
-  if(!quiet) cfg({line_orient:o});
+  if(!quiet) cfg({line_orient:o, cam:srcWhich});
 }
 // ── состояние сервера при загрузке страницы ───────────────────────────────
 // Панель могли перезагрузить, пока сервис уже работает — скажем, стримит телефон.
@@ -477,7 +617,7 @@ function setOrient(o, quiet){
 // живой источник на веб-камеру. Поэтому при первом ответе /stats раскладываем
 // состояние сервера по контролам — ровно один раз, чтобы дальше не перебивать
 // то, что человек крутит прямо сейчас.
-let stateLoaded = false;
+let stateLoaded = false, devLoaded = false;
 function applyServerState(s){
   if(s.source)                       setSource(s.source, true);
   if(typeof s.mirror === 'boolean')  setMirror(s.mirror, true);
@@ -494,9 +634,7 @@ function applyServerState(s){
   if(typeof s.expect_color === 'string') $('expColor').value = s.expect_color;
   // сервис уже считает — показываем поток, а не заглушку
   if(s.running && !running){
-    viewMain.setCam(srcWhich); viewMain.start();
-    $('video').style.display = 'block';
-    $('ph').style.display = 'none';
+    showBoth(true);
     $('bStart').disabled = true;
     $('bStop').disabled = false;
     running = true;
@@ -533,8 +671,11 @@ loadModels();
 // ── опрос статистики ──────────────────────────────────────────────────────
 async function tick(){
   try{
-    // главная карточка показывает ту камеру, что выбрана в «Источник и модель»
-    const s = await (await fetch('/stats?cam=' + srcWhich)).json();
+    // Счёт ведёт камера B — её показания официальные. Камера A остаётся для
+    // проверки: её счёт виден в карточке сверки. Поэтому итоги, журнал и
+    // «в кадре сейчас» берём именно с B, независимо от того, чей источник
+    // сейчас правят в карточке справа.
+    const s = await (await fetch('/stats?cam=' + COUNT_CAM)).json();
 
     if(!stateLoaded){ stateLoaded = true; applyServerState(s); }
 
@@ -596,7 +737,7 @@ async function tick(){
       // всей страницы пересоздаём только сам видеопоток.
       h.classList.remove('err');
       h.innerHTML = defaultHint;
-      if(s.running) viewMain.setCam(srcWhich); viewMain.start();
+      if(s.running) showBoth(true);
     }
 
     if(!s.running && running){
@@ -646,18 +787,23 @@ function viewer(canvasId, camName){
   };
 }
 
-const viewMain = viewer('video', 'A');
-viewer('dualImgA', 'A').start();
-viewer('dualImgB', 'B').start();
+// Два окна вверху — основной вид. Каждое смотрит на свою камеру и не зависит
+// от того, чей источник сейчас правят в карточке справа.
+const viewA = viewer('video', 'A');
+const viewB = viewer('videoB', 'B');
 
 let dualCapturing = false, dualConnA = false, dualConnB = false;
 // последнее, что известно про обе камеры: нужно и карточке съёмки,
 // и переключателю источника — второй раз то же самое не спрашиваем
 let lastCams = null;
 
+// Имя идёт в название папки и файлов датасета, поэтому набор символов узкий.
+// Про пробел говорим отдельно: это самая частая опечатка, а общая фраза про
+// «допустимые символы» не подсказывает, что именно убрать.
 function dualNameError(v){
-  if(!v)                                     return 'впиши имя детали, например rama';
-  if(/[^\x20-\x7E]/.test(v))                 return 'только латиницей, например rama';
+  if(!v)                                     return 'впиши имя детали, например disk';
+  if(/\s/.test(v))                           return 'убери пробел — пиши disk_2, а не «disk 2»';
+  if(/[^\x20-\x7E]/.test(v))                 return 'только латиницей, например disk';
   if(!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(v)) return 'можно латиницу, цифры, дефис и подчёркивание';
   return '';
 }
@@ -666,12 +812,42 @@ function refreshDualBtn(){
   const bad = dualNameError($('dualName').value.trim());
   $('dualRec').disabled = dualCapturing ? false : (bad !== '' || !dualConnA || !dualConnB);
 }
-$('dualName').addEventListener('input', refreshDualBtn);
+// Имя детали помним между заходами: снимают одну и ту же деталь помногу
+// подходов, и вбивать её название после каждого обновления страницы — морока.
+const DUAL_KEY = 'vision.dualname';
+try{
+  const v = localStorage.getItem(DUAL_KEY);
+  // Пустое или негодное запомненное имя не подставляем: оно молча
+  // заблокировало бы кнопку сразу после открытия страницы.
+  if(v && !dualNameError(v)) $('dualName').value = v;
+}catch(e){}
+// Сколько кадров набежит при таком интервале. Прежние 8 кадров в секунду
+// давали за три минуты под тысячу почти одинаковых — размечать это некому.
+function showGap(){
+  const g = +$('dualGap').value;
+  const perMin = Math.round(60 / g) * 2;      // две камеры
+  $('gapHint').innerHTML = `За минуту съёмки наберётся около <b>${perMin}</b> кадров `
+    + `с двух камер. Похожие кадры всё равно отбрасываются, так что выйдет меньше. `
+    + `Реже — меньше однообразия и меньше работы по разметке.`;
+  try{ localStorage.setItem('vision.dualgap', $('dualGap').value); }catch(e){}
+}
+$('dualGap').onchange = showGap;
+try{
+  const g = localStorage.getItem('vision.dualgap');
+  if(g && [...$('dualGap').options].some(o=>o.value===g)) $('dualGap').value = g;
+}catch(e){}
+showGap();
+
+$('dualName').addEventListener('input', () => {
+  refreshDualBtn();
+  try{ localStorage.setItem(DUAL_KEY, $('dualName').value.trim()); }catch(e){}
+});
 
 $('dualRec').onclick = async () => {
   const want = !dualCapturing;
   try{
-    const r = await post('/capture/both', {active: want, name: $('dualName').value.trim()});
+    const r = await post('/capture/both', {active: want, name: $('dualName').value.trim(),
+                                          gap: +$('dualGap').value});
     if(r.error){
       $('dualRecHint').className = 'hint err';
       $('dualRecHint').textContent = '⚠ ' + r.error;
@@ -680,7 +856,7 @@ $('dualRec').onclick = async () => {
     dualCapturing = r.capturing;
     $('dualName').disabled = dualCapturing;
     $('dualRec').classList.toggle('primary', !dualCapturing);
-    $('dualRec').textContent = dualCapturing ? `■ Стоп · ${r.count}` : '● Снимать';
+    $('dualRec').textContent = dualCapturing ? `■ Стоп · ${r.count}` : '● Снимать с обеих камер';
   }catch(e){
     $('dualRecHint').className = 'hint err';
     $('dualRecHint').textContent = '⚠ Не удалось включить съёмку';
@@ -697,20 +873,30 @@ async function dualTick(){
   // Готовность — это «идут кадры», а не «подключён телефон»: на конвейере
   // источник это ссылка rtsp://, телефона там нет вовсе.
   dualConnA = !!a.feeding; dualConnB = !!b.feeding;
+  // чем закончился подбор пути к потоку и что с камерой сейчас
+  const me = d.cams[srcWhich], st = $('srcState');
+  showCreds(me);
+  showGate(me);
+  if(!devLoaded && me.device){ devLoaded = true; setDevice(me.device, true); }
+  if(me.error){        st.className = 'hint err';  st.textContent = '⚠ ' + me.error; }
+  else if(me.hint){    st.className = 'hint good'; st.textContent = '✓ ' + me.hint; }
+  else {               st.className = 'hint';      st.textContent = ''; }
+
   // подсказка под полем источника: что стоит у той камеры, которую сейчас не правим
   const other = srcWhich === 'A' ? 'B' : 'A';
-  $('srcOther').textContent = `У камеры ${other} сейчас: ${d.cams[other].source}`;
+  $('srcOther').textContent = `У камеры ${other} сейчас: ${d.cams[other].source_safe || d.cams[other].source}`;
   // Поле источника держим в согласии с сервером. Иначе показывает одно, а у
   // камеры стоит другое: телефон, подключившись, переводит свою камеру на себя
   // сам, и панель об этом не узнавала. Пока в поле печатают — не трогаем.
   if(document.activeElement !== $('src') && d.cams[srcWhich].source !== $('src').value){
     setSource(d.cams[srcWhich].source, true);
   }
-  $('camDotA').classList.toggle('on', dualConnA);
-  $('camDotB').classList.toggle('on', dualConnB);
+  $('dotA').classList.toggle('on', dualConnA);
+  $('dotB').classList.toggle('on', dualConnB);
   // говорим и про источник: с двумя камерами легко перепутать, какая где
-  const state = (v, on) => on ? `идут кадры · ${v.source}`
-                              : (v.running ? `нет кадров · ${v.source}` : `не запущена · ${v.source}`);
+  // в подписях показываем источник без пароля: панель бывает открыта в цеху
+  const state = (v, on) => { const src = v.source_safe || v.source;
+    return on ? `идут кадры · ${src}` : (v.running ? `нет кадров · ${src}` : `не запущена · ${src}`); };
   $('dualStateA').textContent = state(a, dualConnA);
   $('dualStateB').textContent = state(b, dualConnB);
 
@@ -718,7 +904,7 @@ async function dualTick(){
   $('dualName').disabled = dualCapturing;
   $('dualRec').classList.toggle('primary', !dualCapturing);
   const total = (a.capture_count||0) + (b.capture_count||0);
-  $('dualRec').textContent = dualCapturing ? `■ Стоп · ${total}` : '● Снимать';
+  $('dualRec').textContent = dualCapturing ? `■ Стоп · ${total}` : '● Снимать с обеих камер';
 
   // Ошибку из dualRec.onclick перекрываем текущим статусом только на следующем
   // опросе (раз в секунду) — она успевает мелькнуть, но не залипает навсегда.
@@ -732,7 +918,11 @@ async function dualTick(){
                 + '(ссылка <code>rtsp://…</code> или номер веб-камеры) и нажми «Запустить». '
                 + 'С телефонов — <code>/phone</code> и <code>/phone?cam=B</code>.';
   }else{
-    h.innerHTML = 'Обе камеры на связи — можно снимать.';
+    // Кнопка гасла и из-за имени детали тоже, но об этом нигде не говорилось —
+    // выглядело как «съёмка сломалась». Теперь причина названа.
+    const bad = dualNameError($('dualName').value.trim());
+    if(bad){ h.className = 'hint warn'; h.innerHTML = '⚠ Имя детали: ' + bad; }
+    else     h.innerHTML = 'Обе камеры на связи — можно снимать.';
   }
   refreshDualBtn();
   renderCamDiff(d);
@@ -996,8 +1186,8 @@ $('bTrain').onclick = async () => {
   }
   // камеру гасим сами: видеокарта нужна обучению целиком
   if(running){
-    await post('/stop');
-    viewMain.stop(); $('video').style.display='none'; $('ph').style.display='block';
+    await Promise.all(['A','B'].map(n => post('/stop?cam=' + n)));
+    showBoth(false);
     $('bStop').disabled = true; running = false;
   }
   trainPending = Date.now();

@@ -198,6 +198,7 @@
         <span class="sp"></span>
         <button id="bPrev" disabled>← A</button>
         <button id="bNext" disabled>D →</button>
+        <button id="bDelFrame" class="danger" disabled title="Удалить этот кадр из датасета (Shift+Delete)">🗑 кадр</button>
       </div>
       <div id="stage">
         <canvas id="cv" width="10" height="10"></canvas>
@@ -830,6 +831,7 @@ function drawHead(){
   $('fPos').textContent  = S.files.length ? `${S.idx + 1} из ${S.files.length}` : '';
   $('bPrev').disabled = !S.files.length || S.idx === 0;
   $('bNext').disabled = !S.files.length || S.idx >= S.files.length - 1;
+  $('bDelFrame').disabled = !S.files.length;
 }
 
 function drawBoxList(){
@@ -1017,7 +1019,12 @@ window.addEventListener('keydown', e => {
     case 'KeyN':       e.preventDefault(); markNegative(); break;
     case 'KeyT':       e.preventDefault(); runTracker(); break;
     case 'KeyM':       e.preventDefault(); runPredict(); break;
-    case 'Delete': case 'Backspace': e.preventDefault(); delSel(); break;
+    case 'Delete': case 'Backspace':
+      e.preventDefault();
+      // Delete убирает рамку, Shift+Delete — весь кадр. Разные вещи,
+      // и перепутать их дорого: кадр не вернуть.
+      if(e.shiftKey) delFrame(); else delSel();
+      break;
     case 'Escape':     S.sel = -1; drawAll(); break;
     default:
       const m = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
@@ -1028,6 +1035,32 @@ window.addEventListener('keydown', e => {
 // ── кнопки ────────────────────────────────────────────────────────────────
 $('bPrev').onclick = () => step(-1);
 $('bNext').onclick = () => step(+1);
+$('bDelFrame').onclick = delFrame;
+
+// Убрать кадр из датасета целиком. При съёмке подряд набегают смазанные кадры
+// и повторы, а сеть выучит и их. Удалять весь класс ради нескольких плохих
+// кадров — слишком грубо, поэтому убираем поштучно.
+async function delFrame(){
+  const f = curFile();
+  if(!f) return;
+  const n = S.files.length;
+  if(!confirm(`Удалить кадр ${f} вместе с его разметкой?\n`
+            + `В классе «${S.cur}» останется ${n - 1} из ${n}.\n\nВосстановить будет нельзя.`)) return;
+  try{
+    const r = await postJSON('/dataset/frame/delete', {name: S.cur, file: f});
+    S.drafts.delete(f); saveDrafts();
+    S.files   = r.files || [];
+    S.labeled = new Set(r.labeled || []);
+    // остаёмся на том же месте в ленте, а не прыгаем в начало
+    S.idx = Math.max(0, Math.min(S.idx, S.files.length - 1));
+    S.boxes = []; S.sel = -1; S.dirty = false; S.undo = [];
+    buildFilm();
+    if(S.files.length) await loadFrame(); else { S.boxes = []; drawAll(); }
+    toast(`Кадр удалён, осталось ${r.left}`);
+  }catch(e){
+    toast('Не удалось удалить: ' + (e.message || e), 'bad');
+  }
+}
 $('bCopy').onclick = copyPrev;
 $('bNeg').onclick  = markNegative;
 $('bDel').onclick  = delSel;

@@ -33,6 +33,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import socket
 import sys
@@ -40,6 +41,7 @@ import threading
 import time
 import webbrowser
 import zlib
+from urllib.parse import quote
 from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
@@ -340,7 +342,14 @@ class Vision:
         # в нулевое: запускаешь вторую — и две камеры дерутся за один и тот же
         # аппарат, вместо двух сторон конвейера получается одна.
         self.source = "0" if name == "A" else "1"
-        self.mirror = True           # зеркалить картинку (для веб-камеры так привычнее)
+        # По умолчанию НЕ зеркалим — показываем так, как видит камера.
+        # Зеркало удобно, когда крутишь предмет перед ноутбуком, но на
+        # конвейере оно вредно: переворачивает направление движения, и
+        # «прошло вперёд» с «прошло назад» меняются местами.
+        self.mirror = False
+        # Поворот кадра в градусах по часовой стрелке. Нужен, когда камеру
+        # повесили с наклоном, а ворота — строго прямая линия.
+        self.rotate = 0.0
         self.stream_width = 960      # ширина картинки в браузере
         # Рисование рамок + JPEG-кодирование превью — тяжёлая, держащая GIL
         # работа. Кадры с телефона идут в своём темпе (сеть/камера телефона),
@@ -355,27 +364,78 @@ class Vision:
         # 29 распознаваниях в секунду. Потолок должен быть заведомо выше любой
         # настоящей камеры и защищать только от лавины кадров с телефона,
         # который шлёт их сотнями в секунду.
-        self.show_gap = 1 / 60
+        # Потолок частоты превью. Близко к частоте камеры ставить нельзя:
+        # было 1/28 при кадре каждые 33.3 мс, и почти каждый кадр приходил
+        # чуть раньше разрешённого и отбрасывался — до экрана доходил
+        # каждый третий. Но и щедрый потолок вреден: при двух камерах
+        # отрисовка превью съедала процессор и распознавание падало
+        # с 18 до 4 раз в секунду. 12 к/с для наблюдения хватает с запасом,
+        # а на телефоне это не сказывается — он рисует рамки сам у себя.
+        # 12 к/с — это измеренный оптимум, а не круглое число. При нём
+        # распознавание успевает 20 раз в секунду, то есть обрабатывает КАЖДЫЙ
+        # кадр, который отдаёт камера (она даёт около 21). Поднять превью до 25
+        # можно, но замерено: распознавание падает с 20 до 6 раз в секунду,
+        # время кадра растёт с 27 до 165 мс. Картинка на экране становится
+        # плавнее за счёт того, ради чего всё делается.
+        self.show_gap = 1 / 12
+        # Логин и пароль камеры. Нужны, чтобы из одного адреса собрать
+        # ссылку на поток: у заводских камер он почти всегда закрыт.
+        self.cam_user = ""
+        self.cam_pass = ""
+        self.hint = ""      # чем закончился подбор пути к потоку
+        # Хотим ли, чтобы эта камера работала. Ставится только кнопками
+        # «Запустить»/«Остановить», а не внутренними перезапусками при
+        # смене модели или источника. Переживает перезагрузку: на заводе
+        # никто не должен нажимать «Запустить» после каждого включения.
+        self.want_running = False
+        # Отдавала ли эта камера кадры хоть раз. Ключевое отличие: если да,
+        # то логин с паролем у неё заведомо верные — камера их уже приняла.
+        # Такую можно поднимать повторно без опаски: неудачных входов не будет,
+        # а значит и блокировки. Ту, что не заработала ни разу, не трогаем:
+        # там причина может быть в пароле, и повторы её заблокируют.
+        self.ever_worked = False
         self._shown_at = 0.0
         self.conf = 0.45             # порог уверенности
         self.line_pos = 0.5          # положение «ворот», 0..1
         self.line_orient = "v"       # 'v' вертикальная | 'h' горизонтальная
+        # Перевернуть направление у этой камеры: чтобы «вперёд» у обеих
+        # значило одно и то же движение конвейера.
+        self.flip_dir = False
+        # Ширина полосы нечувствительности вокруг линии, доля кадра.
+        # 4% — на кадре 1280 это ~50 точек, дрожание рамки заметно меньше.
+        self.line_dead = 0.04
         self.only: set[str] = set()  # какие классы считать (пусто = все)
 
         # съёмка датасета: кадры уходят в dataset/raw/<класс>/
         self.capturing = False
         self.capture_name = "detal"
-        self.capture_count = 0
+        self.capture_count = 0       # номер последнего своего файла
+        self.capture_saved = 0       # сколько снято за нынешний заход
         self.capture_skipped = 0
         self.capture_last = 0.0
         self.capture_src = ""      # источник, с которого шла съёмка
         self.capture_prev = None   # уменьшенная копия последнего сохранённого кадра
-        self.capture_gap = 0.12    # не чаще ~8 раз в секунду
+        # Не чаще одного кадра в это число секунд. Полсекунды — а не прежние
+        # 0.12 — потому что 8 кадров в секунду дают за трёхминутную съёмку под
+        # тысячу почти одинаковых кадров: конвейер за 1/8 секунды проезжает
+        # считанные миллиметры. Размечать такое некому, а сеть от сотни
+        # повторов узнаёт не больше, чем от одного.
+        self.capture_gap = 0.5
         # Насколько кадр должен отличаться от предыдущего сохранённого, чтобы
         # попасть в датасет (среднее отличие яркости, шкала 0-255). Соседние
         # кадры видео почти одинаковы: они раздувают датасет, но ничего не
         # добавляют — сеть просто заучивает их наизусть.
         self.capture_diff = 5.0
+        # Но одного среднего мало. Оно считается по ВСЕМУ кадру, и небольшая
+        # деталь на большом неподвижном фоне его почти не двигает: замерено на
+        # заводских камерах — за один заход верхняя сохранила 202 кадра, а
+        # боковая, снимавшая ровно те же 43 минуты, всего 21. Раз в 12.8 секунды
+        # против раза в 128.6.
+        # Поэтому второй признак: доля точек, изменившихся заметно. Она не
+        # зависит от того, какую часть кадра занимает деталь. Порог взят от
+        # шумового пола: при неподвижной картине эта доля держалась 0.0-0.2%,
+        # так что 0.5% — вдвое с лишним выше шума.
+        self.capture_share = 0.005
 
         self.jpeg: bytes | None = None
         # FPS считаем по числу кадров за окно времени, а не усреднением 1/dt:
@@ -391,6 +451,7 @@ class Vision:
         self.live: dict[str, int] = {}
         self.prev_side: dict[int, int] = {}     # track_id -> с какой стороны линии был
         self.seen_at: dict[int, float] = {}     # track_id -> когда видели в последний раз
+        self.counted_at: dict[int, float] = {}  # track_id -> когда посчитали в последний раз
         self.events: deque = deque(maxlen=60)   # журнал пересечений
 
         # цвет детали
@@ -436,6 +497,21 @@ class Vision:
                     # молча возвращался к обычной модели, которая своих деталей
                     # не знает — и выглядело это как «перестало распознавать»
                     "model": self.model_name,
+                    # Источник тоже запоминаем. Ссылку rtsp:// с логином и
+                    # паролем не будешь набирать заново после каждого
+                    # перезапуска, а на заводе перезапуск — обычное дело.
+                    # Файл в .gitignore, наружу не уедет.
+                    "source": self.source,
+                    "want_running": self.want_running,
+                    "ever_worked": self.ever_worked,
+                    "line_pos": self.line_pos,
+                    "line_orient": self.line_orient,
+                    "flip_dir": self.flip_dir,
+                    "device": self.device,
+                    "mirror": self.mirror,
+                    "rotate": self.rotate,
+                    "cam_user": self.cam_user,
+                    "cam_pass": self.cam_pass,
                     "expect_color": self.expect_color,
                     "saved": datetime.now().strftime("%d.%m %H:%M:%S"),
                 }
@@ -460,6 +536,29 @@ class Vision:
             self.color_alarms = int(d.get("color_alarms") or 0)
             for ev in reversed(d.get("events") or []):
                 self.events.appendleft(ev)
+        # Возвращаем сохранённый источник. «phone» не восстанавливаем: телефона
+        # после перезапуска на связи нет, и камера молча зависла бы в ожидании
+        # кадров, которых никто не шлёт.
+        self.want_running = bool(d.get("want_running"))
+        self.ever_worked = bool(d.get("ever_worked"))
+        if isinstance(d.get("line_pos"), (int, float)):
+            self.line_pos = max(0.02, min(0.98, float(d["line_pos"])))
+        if d.get("device") == "cpu" or (d.get("device") == "cuda"
+                                        and torch.cuda.is_available()):
+            self.device = d["device"]
+        if isinstance(d.get("rotate"), (int, float)):
+            self.rotate = max(-180.0, min(180.0, float(d["rotate"])))
+        if isinstance(d.get("mirror"), bool):
+            self.mirror = d["mirror"]
+        if isinstance(d.get("flip_dir"), bool):
+            self.flip_dir = d["flip_dir"]
+        if d.get("line_orient") in ("v", "h"):
+            self.line_orient = d["line_orient"]
+        self.cam_user = d.get("cam_user") or ""
+        self.cam_pass = d.get("cam_pass") or ""
+        src = (d.get("source") or "").strip()
+        if src and src.lower() != "phone":
+            self.source = src
         # номера объектов после перезапуска начнутся заново, поэтому память
         # о том, кто с какой стороны линии был, не восстанавливаем — иначе
         # первый же кадр насчитал бы ложных пересечений
@@ -518,6 +617,7 @@ class Vision:
         with self.lock:
             self.prev_side.clear()
             self.seen_at.clear()
+            self.counted_at.clear()
 
     def reset(self):
         """Полный сброс счёта — только по кнопке «Сбросить», не сам по себе."""
@@ -525,6 +625,7 @@ class Vision:
             self.counts.clear()
             self.prev_side.clear()
             self.seen_at.clear()
+            self.counted_at.clear()
             self.events.clear()
             self.colors.clear()
             self.color_alarms = 0
@@ -562,6 +663,13 @@ class Vision:
         with self.boxes_lock:
             self.boxes = []
         self._save_state(force=True)      # остановились — счёт на диск
+
+    @property
+    def source_safe(self) -> str:
+        """Источник без пароля — всё, что показываем человеку. В ссылке
+        rtsp://логин:пароль@адрес пароль виден целиком, а панель открыта в цеху
+        и текст ошибки попадает в журнал."""
+        return re.sub(r"://[^@/]*@", "://***@", self.source)
 
     @staticmethod
     def _is_mjpg(cap) -> bool:
@@ -616,6 +724,16 @@ class Vision:
             if cap is None:
                 cap = cv2.VideoCapture(idx)
         else:
+            # RTSP по умолчанию идёт по UDP, а он теряет пакеты: картинка
+            # рассыпается зелёными квадратами, и чем длиннее провод до камеры,
+            # тем чаще. TCP медленнее на доли миллисекунды, но доходит целиком —
+            # для счёта деталей это важнее.
+            # stimeout — сколько микросекунд ждать данных, прежде чем признать
+            # камеру мёртвой. Без него чтение зависает навсегда: поток не
+            # заканчивается, камеру не освободить, помогает только перезапуск.
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                "rtsp_transport;tcp|stimeout;5000000|max_delay;500000"
+            )
             cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # не копим задержку
         return cap
@@ -632,8 +750,19 @@ class Vision:
         self.capture_name = "".join(c for c in name.strip() if c.isalnum() or c in "-_") or "detal"
         folder = RAW / self.capture_name
         folder.mkdir(parents=True, exist_ok=True)
-        # продолжаем нумерацию, а не затираем снятое раньше
-        self.capture_count = len(list(folder.glob("*.jpg")))
+        # Нумерацию продолжаем по СВОИМ кадрам, а не по всей папке. Раньше
+        # бралось число всех файлов, и получалось две неприятности сразу:
+        # номера прыгали (камера сняла двадцатый кадр, а он назван 0220), и
+        # кнопка, складывая счётчики двух камер, показывала вдвое больше, чем
+        # есть на диске — 440 при 221 файле.
+        mine = list(folder.glob(f"{self.capture_name}_{self.name}_*.jpg"))
+        last = 0
+        for p in mine:
+            tail = p.stem.rsplit("_", 1)[-1]
+            if tail.isdigit():
+                last = max(last, int(tail))
+        self.capture_count = last      # для имён файлов: продолжаем свой ряд
+        self.capture_saved = 0         # для показа: сколько сняли именно сейчас
         self.capture_skipped = 0
         self.capture_last = 0.0
         self.capture_prev = None
@@ -653,13 +782,20 @@ class Vision:
         # так «похожесть» считается за доли миллисекунды
         small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 36))
         if self.capture_prev is not None:
-            if float(np.mean(cv2.absdiff(small, self.capture_prev))) < self.capture_diff:
+            d = cv2.absdiff(small, self.capture_prev)
+            # Два признака, и любого достаточно. Среднее ловит крупные перемены
+            # во всём кадре, доля изменившихся точек — небольшой предмет на
+            # неподвижном фоне, который среднее не замечает.
+            moved = (float(np.mean(d)) >= self.capture_diff
+                     or float(np.mean(d > 15)) >= self.capture_share)
+            if not moved:
                 self.capture_skipped += 1   # почти то же самое — не берём
                 return
 
         self.capture_prev = small
         self.capture_last = now
         self.capture_count += 1
+        self.capture_saved += 1
         folder = RAW / self.capture_name
         # Буква камеры в имени — обе камеры пишут в одну и ту же папку класса
         # (это тот же класс детали, просто с двух ракурсов), а без этой буквы
@@ -672,6 +808,20 @@ class Vision:
         # зеркалим ДО всего, чтобы счёт совпадал с тем, что видно на экране
         if self.mirror:
             frame = cv2.flip(frame, 1)
+
+        # Поворот кадра. Камеру редко удаётся повесить идеально ровно, а ворота
+        # в программе — строго горизонтальная или вертикальная линия. Повернуть
+        # картинку под конвейер проще, чем лезть на стремянку. Крутим ДО всего
+        # остального: и сеть, и ворота, и съёмка в датасет должны видеть одно и
+        # то же. Размер кадра сохраняем — углы срезаются, но геометрия остаётся
+        # простой, а на малых углах потеря по краям незаметна.
+        if self.rotate:
+            h, w = frame.shape[:2]
+            # знак минус: положительный угол — по часовой стрелке, как принято
+            # у людей, а не как в математике
+            m = cv2.getRotationMatrix2D((w / 2, h / 2), -self.rotate, 1.0)
+            frame = cv2.warpAffine(frame, m, (w, h), flags=cv2.INTER_LINEAR,
+                                   borderMode=cv2.BORDER_CONSTANT, borderValue=(20, 24, 30))
 
         # В датасет пишем чистый кадр, без рамок — размечать будем сами.
         # Если источник сменился прямо во время съёмки (веб-камера → телефон),
@@ -753,6 +903,10 @@ class Vision:
                 break
             if not self._alive(me):
                 break        # пока читали кадр, источник переключили — не публикуем
+            if not self.ever_worked:
+                # первый пришедший кадр — доказательство, что доступ верный
+                self.ever_worked = True
+                self._save_state(force=True)
             self._publish(frame)
 
     # ── ПОТОК №1б: кадры прилетают с телефона ────────────────────────────────
@@ -776,6 +930,12 @@ class Vision:
             self.mirror = False          # телефон снимает задней камерой, зеркалить не надо
             self.reader = threading.Thread(target=self._phone_loop, args=(me,), daemon=True)
         else:
+            # Своей проверки пароля здесь нет нарочно. Была — и отвергала
+            # камеру, которая прекрасно открывалась: вызов и ответ уходили по
+            # разным соединениям, а камера такой ответ не принимает. Ложный
+            # отказ хуже, чем непонятная ошибка: он не пускает к рабочей камере.
+            # От перебора защищает не проверка, а то, что попытка ровно одна на
+            # нажатие — повторов в программе не осталось.
             cap = self._open_capture()
             if not cap.isOpened():
                 if self._alive(me):
@@ -784,7 +944,7 @@ class Vision:
                             "Ещё камеру может держать другая программа: Zoom, Skype, «Камера»."
                             if src.isdigit() else
                             "Для ссылки rtsp:// проверь адрес, логин и пароль.")
-                    self.error = f"Не удалось открыть источник «{src}». {hint}"
+                    self.error = f"Не удалось открыть источник «{self.source_safe}». {hint}"
                     self.running = False
                 cap.release()
                 return
@@ -809,7 +969,7 @@ class Vision:
                     misses += 1
                     if misses >= 3 and self._alive(me):
                         self.error = (
-                            f"Источник «{self.source}» открылся, но кадров не даёт. "
+                            f"Источник «{self.source_safe}» открылся, но кадров не даёт. "
                             "Скорее всего камеру держит другая программа или номер "
                             "указывает не на то устройство — попробуй соседний номер.")
                         self.running = False
@@ -891,13 +1051,41 @@ class Vision:
                             float(cf), int(ci), col["name"]))
 
                 # ── пересечение «ворот» ──
+                # Полоса нечувствительности вокруг линии. Без неё деталь,
+                # висящая у самой линии, считается многократно: рамка дрожит на
+                # пару пикселей от кадра к кадру, центр перескакивает через
+                # линию туда-обратно, и каждый перескок идёт в счёт. Замерено
+                # на живом проходе: пять настоящих деталей дали счёт 7, номер
+                # #1 посчитан пять раз, #61 и #66 — по три.
+                # Внутри полосы сторону не меняем: значит и пересечения нет.
                 cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                side = (1 if cx > line_x else -1) if self.line_orient == "v" else (1 if cy > line_y else -1)
+                if self.line_orient == "v":
+                    dist, dead = cx - line_x, w * self.line_dead
+                else:
+                    dist, dead = cy - line_y, h * self.line_dead
                 was = self.prev_side.get(tid)
-                self.prev_side[tid] = side
+                if abs(dist) < dead:
+                    side = was          # в полосе — сторона прежняя
+                else:
+                    side = 1 if dist > 0 else -1
+                if side is not None:
+                    self.prev_side[tid] = side
                 self.seen_at[tid] = time.time()
-                if was is not None and was != side:
-                    direction = "in" if side > 0 else "out"
+
+                # Второй заслон: одну и ту же деталь не считаем чаще, чем раз
+                # в две секунды. Полоса снимает дрожание, а это — случай, когда
+                # деталь и правда качнулась туда-обратно на подвеске.
+                recent = time.time() - self.counted_at.get(tid, 0.0) < 2.0
+                if was is not None and side is not None and was != side and not recent:
+                    self.counted_at[tid] = time.time()
+                    # «Вперёд» — это одно и то же движение конвейера, а не одна
+                    # и та же сторона кадра. Камера сверху видит деталь идущей
+                    # вглубь, камера сбоку — слева направо; без переворота одна
+                    # писала бы «вперёд», другая «назад» на одном событии, и
+                    # сверять их показания было бы нельзя. Замерено: A дала
+                    # 2 вперёд, B — 3 назад на одном и том же проходе.
+                    fwd = side > 0 if not self.flip_dir else side < 0
+                    direction = "in" if fwd else "out"
                     # Сверка с заданием: цвет краски известен заранее, камера
                     # лишь подтверждает. Расхождение — повод для аларма.
                     ok = (not self.expect_color or not col["name"]
@@ -922,6 +1110,7 @@ class Vision:
             for k in [k for k, t in self.seen_at.items() if now - t > 30]:
                 self.prev_side.pop(k, None)
                 self.seen_at.pop(k, None)
+                self.counted_at.pop(k, None)
 
         return out, dict(live)
 
@@ -942,13 +1131,19 @@ class Vision:
             cv2.rectangle(frame, (x1, max(0, y1 - 22)), (x1 + tw + 10, y1), bgr(rgb), -1)
             labels.append((x1 + 5, max(0, y1 - 20), text))
 
-        # «ворота»
+        # «Ворота»: сама линия и полоса нечувствительности вокруг неё. Полосу
+        # показываем нарочно — по ней видно, где деталь ещё не считается, и
+        # понятно, почему дрожащая у линии рамка не даёт лишних срабатываний.
         if self.line_orient == "v":
             x = int(w * self.line_pos)
+            d = max(1, int(w * self.line_dead))
+            cv2.rectangle(frame, (x - d, 0), (x + d, h), (70, 130, 150), 1)
             cv2.line(frame, (x, 0), (x, h), (60, 220, 255), 3)
             cv2.line(frame, (x, 0), (x, h), (255, 255, 255), 1)
         else:
             y = int(h * self.line_pos)
+            d = max(1, int(h * self.line_dead))
+            cv2.rectangle(frame, (0, y - d), (w, y + d), (70, 130, 150), 1)
             cv2.line(frame, (0, y), (w, y), (60, 220, 255), 3)
             cv2.line(frame, (0, y), (w, y), (255, 255, 255), 1)
 
@@ -1023,6 +1218,10 @@ def cam(name: str | None = None) -> Vision:
 
 
 class Config(BaseModel):
+    device: str | None = None     # 'cuda' | 'cpu' — чем считать
+    rotate: float | None = None   # поворот кадра, градусы по часовой
+    user: str | None = None       # логин камеры
+    password: str | None = None   # пароль камеры
     # Источник — единственная настройка, которая у камер РАЗНАЯ: это, собственно,
     # и есть сама камера. Две камеры по бокам конвейера — это две разные ссылки
     # rtsp:// или два разных номера устройства. Поэтому у source есть адресат.
@@ -1031,6 +1230,7 @@ class Config(BaseModel):
     conf: float | None = None
     line_pos: float | None = None
     line_orient: str | None = None
+    flip_dir: bool | None = None   # перевернуть «вперёд/назад» у этой камеры
     only: str | None = None
     model: str | None = None
     mirror: bool | None = None
@@ -1152,7 +1352,7 @@ async def ws_camera(ws: WebSocket, cam_name: str = Query("A", alias="cam")):
                 "shot": shot_orientation_cached(),
                 "capturing": v.capturing,
                 "capture_name": v.capture_name,
-                "capture_count": v.capture_count,
+                "capture_count": v.capture_saved,
                 "capture_skipped": v.capture_skipped,
             })
     except (WebSocketDisconnect, RuntimeError):
@@ -1240,9 +1440,18 @@ def cams():
             "running": s["running"], "error": s["error"], "source": s["source"],
             "model": s["model"], "fps": s["fps"], "fps_detect": s["fps_detect"],
             "counts": s["counts"], "total_in": s["total_in"], "total_out": s["total_out"],
-            "phone": s["phone"], "feeding": v.feeding,
+            "phone": s["phone"], "feeding": v.feeding, "source_safe": v.source_safe,
+            "hint": v.hint,
+            # ворота и устройство — панель показывает их у выбранной камеры
+            "line_pos": v.line_pos, "line_orient": v.line_orient,
+            "flip_dir": v.flip_dir,
+            "rotate": v.rotate,
+            "device": v.device,
+            # сам пароль наружу не отдаём — только признак, что он есть
+            "cam_user": v.cam_user, "has_pass": bool(v.cam_pass),
             "capturing": v.capturing, "capture_name": v.capture_name,
-            "capture_count": v.capture_count, "capture_skipped": v.capture_skipped,
+            "capture_count": v.capture_saved, "capture_skipped": v.capture_skipped,
+            "capture_gap": v.capture_gap,
         }
     a, b = CAMS["A"].stats(), CAMS["B"].stats()
     # расхождение считаем по каждому классу отдельно: общая сумма прячет случай,
@@ -1258,7 +1467,15 @@ def cams():
             "both_running": all(v.running for v in CAMS.values())}
 
 
+def _set_gap(v, gap):
+    """Интервал между кадрами. Границы: чаще 0.1 с смысла нет — кадры
+    будут отброшены как похожие, реже 10 с — можно проехать деталь."""
+    if gap is not None:
+        v.capture_gap = max(0.1, min(10.0, float(gap)))
+
+
 class CaptureCfg(BaseModel):
+    gap: float | None = None
     active: bool
     name: str | None = None
     cam: str | None = None
@@ -1268,15 +1485,17 @@ class CaptureCfg(BaseModel):
 def capture(c: CaptureCfg):
     """Съёмка кадров в датасет прямо с телефона."""
     v = cam(c.cam)
+    _set_gap(v, c.gap)
     if c.active:
         v.capture_start(c.name or v.capture_name)
     else:
         v.capture_stop()
     return {"capturing": v.capturing, "name": v.capture_name,
-            "count": v.capture_count, "skipped": v.capture_skipped}
+            "count": v.capture_saved, "skipped": v.capture_skipped}
 
 
 class CaptureBothCfg(BaseModel):
+    gap: float | None = None      # не чаще одного кадра в это число секунд
     active: bool
     name: str | None = None
 
@@ -1289,6 +1508,8 @@ def capture_both(c: CaptureBothCfg):
     один из них не долетит, камеры разъедутся — одна снимает, другая нет.
     """
     a, b = CAMS["A"], CAMS["B"]
+    for v in (a, b):
+        _set_gap(v, c.gap)
     if c.active:
         # Готовность — это «идут кадры», а не «подключён телефон». Раньше здесь
         # стояло phone_connected, и со ссылками rtsp:// или веб-камерами съёмку
@@ -1297,7 +1518,7 @@ def capture_both(c: CaptureBothCfg):
         for v in (a, b):
             if not v.feeding:
                 return fail(f"Камера {v.name} не даёт кадров. "
-                            f"Проверь источник «{v.source}» и нажми «Запустить».")
+                            f"Проверь источник «{v.source_safe}» и нажми «Запустить».")
         name = c.name or a.capture_name
         a.capture_start(name)
         b.capture_start(name)
@@ -1307,11 +1528,11 @@ def capture_both(c: CaptureBothCfg):
     return {
         "capturing": a.capturing and b.capturing,
         "name": a.capture_name,
-        "count": a.capture_count + b.capture_count,
+        "count": a.capture_saved + b.capture_saved,
         "skipped": a.capture_skipped + b.capture_skipped,
         "cams": {
-            "A": {"count": a.capture_count, "skipped": a.capture_skipped},
-            "B": {"count": b.capture_count, "skipped": b.capture_skipped},
+            "A": {"count": a.capture_saved, "skipped": a.capture_skipped},
+            "B": {"count": b.capture_saved, "skipped": b.capture_skipped},
         },
     }
 
@@ -1591,6 +1812,37 @@ def dataset_delete(c: ClassName):
     # состав классов изменился — dataset_classes() увидит это и сам перепишет
     # номера во всей оставшейся разметке
     return {"ok": True, "classes": dataset_classes()}
+
+
+class FrameRef(BaseModel):
+    name: str            # класс
+    file: str            # имя файла кадра
+
+
+@app.post("/dataset/frame/delete")
+def dataset_frame_delete(c: FrameRef):
+    """
+    Убирает один кадр вместе с его разметкой.
+
+    Нужно чаще, чем кажется: при съёмке подряд набегают смазанные кадры, кадры
+    с пустой подвеской и просто повторы. Держать их в датасете вредно — сеть
+    учится на том, что ей дали, и мусор она выучит тоже. Удалять весь класс
+    ради нескольких плохих кадров — слишком грубо.
+
+    Разметку удаляем вместе с картинкой: осиротевший .txt при сборке датасета
+    ни на что не сошлётся, а в подсчёте «сколько размечено» будет врать.
+    """
+    p = frame_path(c.name, c.file)
+    txt = p.with_suffix(".txt")
+    try:
+        p.unlink()
+        txt.unlink(missing_ok=True)
+    except OSError as e:
+        return fail(f"Не удалось удалить кадр: {e}")
+    left = frame_files(p.parent)
+    return {"ok": True, "left": len(left),
+            "files": [f.name for f in left],
+            "labeled": [f.name for f in left if f.with_suffix(".txt").exists()]}
 
 
 class ClassRename(BaseModel):
@@ -2233,11 +2485,16 @@ class Trainer:
         # видеокарта одна: пока учимся, распознавать нечем.
         # Запоминаем, работал ли источник, чтобы вернуть его после обучения —
         # иначе телефон навсегда останется с картинкой без рамок и «YOLO 0/с».
-        was_running = vision.running
+        # Останавливаем ВСЕ камеры, а не только первую. Раньше здесь стояла
+        # одна vision — это камера A, — и камера B продолжала распознавать
+        # во время обучения: отбирала у него и память видеокарты, и время.
+        was_running = {n: v.running for n, v in CAMS.items()}
         try:
-            vision.stop()
-            self.say("Источник остановлен: камера и распознавание выключены, "
-                     "видеокарта отдана обучению целиком.")
+            for v in CAMS.values():
+                v.stop()
+            live = ", ".join(n for n, on in was_running.items() if on)
+            self.say(f"Остановлены камеры: {live or 'ни одной не работало'}. "
+                     "Видеокарта отдана обучению целиком.")
             self.say(f"Старт: {cfg.model} → {name}, эпох {self.epochs}, "
                      f"кадр {cfg.imgsz}, батч {cfg.batch}")
 
@@ -2323,15 +2580,51 @@ class Trainer:
                 self.stopping = False
                 self.done = True
             # видеокарта освободилась — поднимаем источник обратно, если он работал
-            if was_running:
+            back = []
+            for n, on in was_running.items():
+                if not on:
+                    continue
                 try:
-                    vision.start()
-                    self.say("Источник запущен обратно — распознавание снова работает.")
-                except Exception as e:
-                    self.say(f"Источник поднять не вышло: {e}")
+                    CAMS[n].start()
+                    back.append(n)
+                except Exception as e:                  # noqa: BLE001
+                    self.say(f"Камеру {n} поднять не вышло: {e}")
+            if back:
+                self.say(f"Камеры {', '.join(back)} запущены обратно — "
+                         "распознавание снова работает.")
 
 
 trainer = Trainer()
+
+
+def reviver():
+    """
+    Поднимает камеру, которая работала и перестала.
+
+    Почему это безопасно, в отличие от прежнего сторожа: берёмся только за ту
+    камеру, что **уже отдавала кадры**. Значит логин с паролем она приняла, и
+    повторное подключение неудачным входом не будет — блокировать нечего.
+    Камеру, не заработавшую ни разу, не трогаем совсем: там причина может быть
+    в пароле, и повторы загонят её в блок. Именно так и вышло в прошлый раз.
+
+    Зачем вообще: поток рвётся не только от поломок. Сменил настройки камеры —
+    она перезапускает кодировщик и рвёт сессию. Перезагрузилась, моргнула сеть,
+    отвалился VPN — то же самое. Без этого каждый такой случай приходится
+    чинить руками, а в цеху некому.
+    """
+    while True:
+        time.sleep(20)
+        if trainer.running:
+            continue
+        for v in CAMS.values():
+            if v.running or v.is_phone:
+                continue
+            if not (v.want_running and v.ever_worked):
+                continue
+            try:
+                v.start()
+            except Exception as e:                      # noqa: BLE001
+                v.error = f"Не удалось поднять камеру {v.name}: {e}"
 
 
 class TrainCfg(BaseModel):
@@ -2378,14 +2671,18 @@ def start(cam_name: str = Query("A", alias="cam")):
     if trainer.running:
         v.error = "Идёт обучение — видеокарта занята. Дождись конца или останови обучение."
         return v.stats()
+    v.want_running = True          # и после перезагрузки поднимется само
     v.start()
     time.sleep(0.8)
+    v._save_state(force=True)
     return v.stats()
 
 
 @app.post("/stop")
 def stop(cam_name: str = Query("A", alias="cam")):
-    cam(cam_name).stop()
+    v = cam(cam_name)
+    v.want_running = False         # остановили руками — сама больше не встаёт
+    v.stop()
     return {"ok": True}
 
 
@@ -2396,6 +2693,95 @@ def reset(cam_name: str = Query("A", alias="cam")):
     # счёт, набранный за один и тот же отрезок времени.
     cam(cam_name).reset()
     return {"ok": True}
+
+
+# ── подбор ссылки на поток по одному адресу камеры ───────────────────────────
+# Человек знает адрес камеры, а не путь к её потоку. Путь у каждой марки свой
+# и меняется от прошивки к прошивке — помнить его не должен никто. Спрашиваем
+# у самой камеры: на неверный путь она отвечает «404», на верный — «401, нужен
+# пароль» или сразу «200». Пароль для этой проверки не требуется.
+#
+# Порядок важен: сначала «второй поток» (substream). Он обычно 720-1080, и его
+# хватает, а главный часто 4K — на нём одно разжатие кадра стоит около 50 мс,
+# две такие камеры машина не потянет.
+RTSP_PATHS = [
+    "/Streaming/Channels/102",                  # Hikvision, второй
+    "/cam/realmonitor?channel=1&subtype=1",     # Dahua, второй
+    "/h264/ch1/sub/av_stream",                  # Hikvision старый, второй
+    "/stream2", "/onvif2", "/12", "/live/ch2",  # частые «вторые»
+    "/Streaming/Channels/101",                  # Hikvision, главный
+    "/cam/realmonitor?channel=1&subtype=0",     # Dahua, главный
+    "/h264/ch1/main/av_stream",
+    "/stream1", "/onvif1", "/11", "/live/ch1", "/video1", "",
+]
+
+
+def rtsp_describe(ip: str, path: str, port: int = 554, timeout: float = 1.5) -> int:
+    """Код ответа камеры на запрос о потоке. 0 — не ответила совсем."""
+    req = (f"DESCRIBE rtsp://{ip}:{port}{path} RTSP/1.0\r\n"
+           f"CSeq: 1\r\nUser-Agent: vision\r\nAccept: application/sdp\r\n\r\n")
+    try:
+        with socket.create_connection((ip, port), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(req.encode())
+            head = s.recv(512).decode("latin-1", "replace")
+    except OSError:
+        return 0
+    parts = head.split("\r\n", 1)[0].split()
+    return int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+
+
+# «просто адрес»: 172.16.20.7, или с http/https впереди, или с портом
+_IP_ONLY = re.compile(r"^(?:https?://)?(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?/?$")
+
+
+def resolve_source(text: str, user: str = "", pwd: str = "") -> tuple[str, str]:
+    """
+    Превратить то, что вписал человек, в готовую ссылку на поток.
+
+    Возвращает (ссылка, пояснение). Если это уже готовая ссылка rtsp:// или
+    номер веб-камеры — отдаём как есть, трогать нечего.
+    """
+    text = text.strip()
+    m = _IP_ONLY.match(text)
+    if not m:
+        return text, ""
+    ip = m.group(1)
+    # Порт можно указать через двоеточие — у части камер поток не на 554
+    port = int(m.group(2)) if m.group(2) else 554
+
+    if not _port_alive(ip, port):
+        return "", (f"Камера {ip} не отвечает на порт {port}. Проверь адрес, "
+                    f"включена ли камера и подключён ли VPN.")
+
+    for path in RTSP_PATHS:
+        code = rtsp_describe(ip, path, port)
+        if code in (200, 401):
+            auth = ""
+            if user and (pwd or code == 200):
+                auth = f"{quote(user, safe='')}:{quote(pwd, safe='')}@"
+            elif code == 401:
+                # Логин без пароля — не доступ. Раньше здесь собиралась ссылка
+                # вида «admin:@адрес», камера её отвергала, и выглядело это как
+                # «не удалось открыть источник» без всякого намёка на причину.
+                # Говорим ровно про то поле, которого не хватает. Раньше текст
+                # был общий, и при заполненном пароле человек искал ошибку не там.
+                missing = ("логина" if pwd else
+                           "пароля" if user else "логина и пароля")
+                return "", (f"Камера {ip} нашлась, путь {path or '/'}. "
+                            f"Не хватает {missing} — впиши в поля ниже.")
+            return (f"rtsp://{auth}{ip}:{port}{path}",
+                    f"путь подобран сам: {path or '/'}")
+    return "", (f"Камера {ip} отвечает, но ни один из известных путей не подошёл. "
+                f"Посмотри точную ссылку в её веб-интерфейсе, раздел «RTSP».")
+
+
+def _port_alive(ip: str, port: int = 554, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def _set_source(v: Vision, src: str):
@@ -2413,16 +2799,43 @@ def _set_source(v: Vision, src: str):
     if not src:
         # пустое поле — не источник; молча ставить «0» тоже нельзя,
         # иначе человек не поймёт, почему открылась не та камера
-        v.error = "Источник не указан. Впиши 0, phone или ссылку rtsp://…"
+        v.error = "Источник не указан. Впиши адрес камеры, 0 или phone."
         return
+
+    # Ссылка с логином, но без пароля — не доступ, а тихая поломка: камера
+    # ответит отказом, а человек будет искать причину в сети или в пути.
+    if re.match(r"^rtsp://[^:@/]+:@", src, re.I):
+        v.hint = ""
+        v.error = ("В ссылке есть логин, но пустой пароль. Впиши пароль "
+                   "в поле ниже или вставь ссылку целиком, вместе с ним.")
+        return
+
+    # Спецсимволы в пароле проверять не надо. Была такая проверка — отвергала
+    # пароль с косой чертой, решив, что FFmpeg не раскодирует «%2F» обратно.
+    # Проверено на живой камере: раскодирует, пароль с косой чертой работает.
+    # Достаточно закодировать его при сборке ссылки, что и делается.
+
+    # Вписали просто адрес камеры — доспрашиваем у неё путь к потоку сами.
+    # Помнить «/Streaming/Channels/102» человек не обязан.
+    resolved, note = resolve_source(src, v.cam_user, v.cam_pass)
+    if not resolved:
+        v.hint = ""
+        v.error = note or f"Не разобрать источник «{src}»."
+        return
+    # Присваиваем всегда, даже пустое. Иначе подсказка от прошлого разбора
+    # висит зелёной галочкой над новой ошибкой и выглядит как «всё хорошо».
+    v.hint = note
+    src = resolved
+
     if src == v.source:
         return
     was = v.running
-    v.stop()
+    v.stop()                # stop() успевает записать состояние со СТАРЫМ источником
     v.source = src
     v.error = None          # прежняя жалоба была про прежний источник
     if was:
         v.start()
+    v._save_state(force=True)   # ...поэтому новый сохраняем отдельно, уже после пуска
 
 
 @app.post("/config")
@@ -2439,14 +2852,54 @@ def config(c: Config):
     конвейера были невозможны в принципе: вторая ссылка rtsp:// затирала первую,
     обе камеры показывали одну и ту же сторону.
     """
+    # Логин и пароль камеры — до разбора источника: иначе ссылка соберётся
+    # без них, камера ответит «401» и это будет выглядеть как «не работает».
+    tgt = cam(c.cam)
+    if c.user is not None:
+        tgt.cam_user = c.user.strip()
+    if c.password:
+        # Пустая строка — это «оставь как было», а не «сотри». После
+        # перезагрузки страницы поле пароля пустое, и иначе первое же
+        # изменение адреса стирало бы сохранённый пароль.
+        tgt.cam_pass = c.password
     if c.source is not None:
-        _set_source(cam(c.cam), c.source)
+        _set_source(tgt, c.source)
+
+    # Ворота — тоже своё у каждой камеры, и по той же причине, что источник:
+    # это свойство вида, а не задания. Камера сверху смотрит вдоль конвейера,
+    # и деталь пересекает кадр по вертикали — там нужна горизонтальная линия.
+    # Камера сбоку видит движение поперёк, там линия вертикальная. Одна общая
+    # настройка означала бы, что на одной из камер ворота стоят поперёк
+    # движения и не считают ничего.
+    if c.rotate is not None:
+        tgt.rotate = max(-180.0, min(180.0, float(c.rotate)))
+        tgt._save_state(force=True)
+    if c.flip_dir is not None:
+        tgt.flip_dir = bool(c.flip_dir)
+        tgt._save_state(force=True)
+    if c.line_pos is not None or c.line_orient in ("v", "h"):
+        if c.line_pos is not None:
+            tgt.line_pos = max(0.02, min(0.98, c.line_pos))
+        if c.line_orient in ("v", "h"):
+            tgt.line_orient = c.line_orient
+        # Сразу на диск. Обычное сохранение идёт по событиям на воротах, а их
+        # может не быть часами — и настройка, сделанная руками, терялась при
+        # перезапуске. Ставят её один раз под вид камеры, терять нельзя.
+        tgt._save_state(force=True)
 
     for v in CAMS.values():
         # Каждая камера — в своей попытке: если с одной что-то пошло не так
         # (например, она как раз отключилась), это не должно мешать применить
         # настройки второй и не должно ронять весь запрос с 500-й ошибкой.
         try:
+            if c.device in ("cuda", "cpu"):
+                # Видеокарту выбирать можно только если она есть. Просьбу о
+                # cuda без неё молча проглотить нельзя — человек будет ждать
+                # ускорения, которого не будет.
+                if c.device == "cuda" and not torch.cuda.is_available():
+                    v.error = "Видеокарта NVIDIA не найдена — считать можно только процессором."
+                else:
+                    v.device = c.device
             if c.check_color is not None:
                 v.check_color = c.check_color
             if c.expect_color is not None:
@@ -2460,10 +2913,6 @@ def config(c: Config):
                 v.mirror = c.mirror
             if c.conf is not None:
                 v.conf = max(0.05, min(0.95, c.conf))
-            if c.line_pos is not None:
-                v.line_pos = max(0.02, min(0.98, c.line_pos))
-            if c.line_orient in ("v", "h"):
-                v.line_orient = c.line_orient
             if c.only is not None:
                 wanted = [s.strip().lower() for s in c.only.split(",") if s.strip()]
                 # разрешаем писать по-русски: переводим обратно в исходные имена модели
@@ -2475,6 +2924,12 @@ def config(c: Config):
                 v.load_model(c.model)
                 if was:
                     v.start()
+                # Сразу на диск. Без этого запись шла только по событиям на
+                # воротах, и камеры расходились: у одной успело сохраниться
+                # новое имя модели, у другой осталось старое — после
+                # перезапуска они поднимались с РАЗНЫМИ моделями и считали
+                # по-разному. Сравнивать их показания в таком виде бессмысленно.
+                v._save_state(force=True)
         except Exception as e:
             v.error = f"Не удалось применить настройки для камеры {v.name}: {e}"
     return CAMS["A"].stats()
@@ -2591,7 +3046,20 @@ if __name__ == "__main__":
     for cam_v in CAMS.values():
         saved = cam_v.load_state()
         if saved:
-            print(f"  Камера {cam_v.name}: счёт восстановлен из сохранения от {saved}")
+            # источник показываем без пароля: окно может быть на виду у цеха
+            note = "поднимаю" if cam_v.want_running and not cam_v.is_phone else "ждёт"
+            print(f"  Камера {cam_v.name}: счёт от {saved}, "
+                  f"источник {cam_v.source_safe} — {note}")
+
+    # Камеры, помеченные как рабочие, поднимаем ОДИН раз при запуске.
+    # Никаких повторов: камера с неверным паролем блокирует вход после пяти
+    # неудачных попыток, и автоматические повторы загоняют её в блок за минуты.
+    # Не поднялась — значит ждём человека, он нажмёт «Запустить» сам.
+    for cam_v in CAMS.values():
+        if cam_v.want_running and not cam_v.is_phone:
+            threading.Thread(target=cam_v.start, daemon=True).start()
+    # и дальше приглядываем за теми, что уже доказали свою работоспособность
+    threading.Thread(target=reviver, daemon=True).start()
     print("=" * 62)
     print("  Чтобы остановить — закрой это окно или нажми Ctrl+C")
     print("=" * 62)
