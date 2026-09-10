@@ -10,3 +10,15 @@ __pycache__/
 README.md
 open-ports.ps1
 capture.py
+data/
+# Готовые модели, кроме самой лёгкой: в образ COPY идёт только yolo11n.pt,
+# остальные лишь раздували бы контекст сборки на 60 МБ. Понадобятся — панель
+# скачает их сама при выборе.
+yolo11m.pt
+yolo11s.pt
+yolo26n.pt
+# состояние и журнал живут в томе data/, в образе им делать нечего
+state*.json
+events.jsonl
+backup/
+history/

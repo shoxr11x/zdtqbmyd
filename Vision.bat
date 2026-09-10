@@ -13,6 +13,11 @@ cd /d "%~dp0"
 rem the server opens the browser itself once it is ready
 set VISION_OPEN=1
 
+rem Counters, chosen model, camera credentials and the event log live in
+rem data\ - the same folder the container mounts. Without this the two ways
+rem of starting would keep two separate states and the counts would drift.
+set VISION_DATA=%~dp0data
+
 if not exist "%~dp0.venv\Scripts\python.exe" (
   echo.
   echo ERROR: .venv not found next to this file.

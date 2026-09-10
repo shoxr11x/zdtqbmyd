@@ -37,6 +37,28 @@
   #stage canvas,#stageB canvas{width:100%;height:100%;object-fit:contain;display:none}
   #ph{color:var(--muted);text-align:center;padding:22px 10px 0;font-size:14px;line-height:1.7}
 
+  /* Крупный режим: на экране только два кадра.
+     Нужен у конвейера — туда смотрят издалека и мельком, и всё остальное
+     (настройки, съёмка, обучение) там только отнимает место у картинки. */
+  body.big{overflow:hidden}
+  body.big .pair{
+    position:fixed; inset:0; z-index:60; background:#05070b;
+    grid-template-rows:1fr; padding:12px; gap:12px;
+  }
+  /* Колонка на всю высоту, кадр по центру. min-height:0 обязателен: без него
+     flex-элемент не даёт себя сжать и кадр вылезает за нижний край. */
+  body.big .pair > div{display:flex;flex-direction:column;justify-content:center;min-height:0}
+  body.big .pair .hint{display:none}
+  /* Кадр держит своё соотношение 16:9, а не растягивается на всю высоту.
+     Растянутый бокс не делает картинку крупнее — object-fit вписывает её
+     внутрь, и разница уходит в чёрные полосы сверху и снизу. */
+  body.big #stage, body.big #stageB{
+    aspect-ratio:16/9; width:100%; height:auto; max-height:100%; margin:auto;
+  }
+  #bigOff{display:none}
+  body.big #bigOff{display:block;position:fixed;z-index:61;top:14px;right:18px;opacity:.55}
+  body.big #bigOff:hover{opacity:1}
+
   .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
   button{padding:10px 16px;border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;
          background:var(--panel2);color:var(--text);border:1px solid var(--line);transition:.15s}
@@ -53,6 +75,20 @@
   .slider input{flex:1}
   .slider b{min-width:44px;text-align:right;color:var(--accent);font-size:13px}
   .creds{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  /* Ворота у камер разные, и раньше правились по одной — какая выбрана выше.
+     Теперь обе видны сразу: перепутать, которой камере ставишь линию, нельзя. */
+  .gate{border:1px solid var(--line);border-radius:10px;background:var(--panel2);
+        padding:10px 12px 12px;margin-top:10px}
+  .gate h3{margin:0;font-size:12px;font-weight:600;color:var(--text);
+           display:flex;align-items:center;gap:7px}
+  .gate h3 i{width:7px;height:7px;border-radius:50%;background:var(--line);flex:none}
+  .gate h3 i.on{background:var(--ok)}
+  .gate h3 s{margin-left:auto;font-size:11px;color:var(--muted);text-decoration:none;
+             font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .gate .slider{margin-top:9px}
+  .gate .slider span{min-width:44px}
+  /* мелкая строка под названием класса в сверке: сколько прошло вперёд и назад */
+  .sub{font-size:11px;color:var(--muted);margin-top:2px;font-variant-numeric:tabular-nums}
   .seg{display:flex;gap:6px;margin-top:8px}
   .seg button{flex:1;padding:8px;font-size:13px}
   .seg button.act{background:var(--accent);color:#04121f;border-color:var(--accent)}
@@ -131,12 +167,12 @@
            карточка. Каждая со своими воротами и своим счётом. -->
       <div class="pair">
         <div>
-          <div class="camlabel"><span class="camdot" id="dotA"></span>Камера A · сверху · проверка</div>
+          <div class="camlabel"><span class="camdot" id="dotA"></span>Камера A · сверху · СЧЁТ</div>
           <div id="stage"><canvas id="video"></canvas></div>
           <div class="hint" id="dualStateA" style="margin-top:6px">камера A</div>
         </div>
         <div>
-          <div class="camlabel"><span class="camdot" id="dotB"></span>Камера B · сбоку · СЧЁТ</div>
+          <div class="camlabel"><span class="camdot" id="dotB"></span>Камера B · сбоку · проверка</div>
           <div id="stageB"><canvas id="videoB"></canvas></div>
           <div class="hint" id="dualStateB" style="margin-top:6px">камера B</div>
         </div>
@@ -147,7 +183,11 @@
         <button class="primary" id="bStart">▶ Запустить обе</button>
         <button id="bStop" disabled>⏸ Остановить обе</button>
         <button class="danger" id="bReset">🔄 Сбросить счёт</button>
+        <button id="bBig">⛶ Увеличить</button>
       </div>
+      <!-- Выход из крупного режима. Отдельной кнопкой, а не той же: в крупном
+           режиме весь ряд кнопок скрыт вместе с остальной панелью. -->
+      <button id="bigOff">✕ Свернуть</button>
 
       <!-- Съёмка датасета здесь же: снимают ровно то, что видно на этих двух
            окнах, и разносить это по разным карточкам незачем. -->
@@ -200,15 +240,17 @@
       <h2>Сверка камер · A vs B</h2>
       <div class="hint" id="camDiffStatus">—</div>
       <table>
-        <thead><tr><th>Класс</th><th style="text-align:right">A · проверка</th><th style="text-align:right">B · счёт</th><th style="text-align:right">расхождение</th></tr></thead>
+        <thead><tr><th>Класс</th><th style="text-align:right">A · счёт</th><th style="text-align:right">B · проверка</th><th style="text-align:right">расхождение</th></tr></thead>
         <tbody id="camDiffTbl"><tr><td colspan="4" class="empty">—</td></tr></tbody>
       </table>
       <div class="hint">
         Камеры смотрят на одни и те же детали — счёт с них НЕ складывается, а сравнивается.
+        Считаются <b>все</b> пересечения ворот, в обе стороны: важно, увидела ли камера деталь,
+        а не куда та поехала. Под названием класса — разбивка ↑вперёд и ↓назад у обеих камер.
         Расхождение — сигнал, что одна из камер что-то потеряла (например, трекер сбился у ворот
         из-за плотно висящих рядом деталей), а не «на сколько их больше».
-        <b>Официальный счёт — камера B</b>, это то же число, что в «Итог по воротам» выше.
-        Камера A сверху служит проверкой: если её счёт заметно расходится, значит одна из двух
+        <b>Официальный счёт — камера A</b>, это то же число, что в «Итог по воротам» выше.
+        Камера B сбоку служит проверкой: если её счёт заметно расходится, значит одна из двух
         не видит часть деталей, и доверять числу пока нельзя.
       </div>
     </div>
@@ -361,6 +403,8 @@
         <b>yolo11n</b> — самая лёгкая и быстрая (nano), <b>s</b> и <b>m</b> — точнее, но тяжелее.
         Своя обученная модель появится здесь после тренировки.
       </div>
+      <!-- предупреждение о подменённой модели: пустое, пока всё в порядке -->
+      <div class="hint warn" id="modelNote" style="display:none"></div>
       <div class="hint" id="modelImgsz"></div>
       <div class="hint" id="modelClasses"></div>
     </div>
@@ -370,25 +414,43 @@
       <div class="slider">
         <span>Уверенность</span><input type="range" id="conf" min="10" max="90" value="45"><b id="confV">45%</b>
       </div>
-      <!-- Ворота у камер разные: они зависят от того, как в этом кадре идёт
-           деталь. Поэтому правим их у той камеры, что выбрана выше. -->
-      <div class="hint" id="gateWho" style="margin-top:10px">Ворота камеры A</div>
-      <div class="slider">
-        <span>Линия</span><input type="range" id="pos" min="5" max="95" value="50"><b id="posV">50%</b>
+      <div class="hint" style="margin-top:10px">Порог общий для обеих камер: они
+        смотрят на один конвейер, и сверять их показания можно только при
+        одинаковом пороге.</div>
+
+      <!-- Ворота у камер разные: они зависят от того, как деталь идёт именно в
+           этом кадре. Показываем обе сразу — раньше правилась только та камера,
+           что выбрана в карточке источника выше, и было не видно, что стоит у
+           второй. -->
+      <div class="gate">
+        <h3><i id="gDotA"></i>Ворота камеры A<s id="gSrcA"></s></h3>
+        <div class="slider">
+          <span>Линия</span><input type="range" id="posA" min="5" max="95" value="50"><b id="posVA">50%</b>
+        </div>
+        <div class="seg">
+          <button id="dirNormA" class="act">→ как есть</button>
+          <button id="dirFlipA">← перевернуть</button>
+        </div>
+        <div class="hint" id="dirHintA"></div>
       </div>
-      <div class="seg">
-        <button id="orV" class="act">│ вертикальная</button>
-        <button id="orH">─ горизонтальная</button>
+
+      <div class="gate">
+        <h3><i id="gDotB"></i>Ворота камеры B<s id="gSrcB"></s></h3>
+        <div class="slider">
+          <span>Линия</span><input type="range" id="posB" min="5" max="95" value="50"><b id="posVB">50%</b>
+        </div>
+        <div class="seg">
+          <button id="dirNormB" class="act">→ как есть</button>
+          <button id="dirFlipB">← перевернуть</button>
+        </div>
+        <div class="hint" id="dirHintB"></div>
       </div>
-      <div class="seg">
-        <button id="dirNorm" class="act">→ как есть</button>
-        <button id="dirFlip">← перевернуть</button>
-      </div>
-      <div class="hint" id="dirHint"></div>
+
       <div class="hint">
-        Линия ставится <b>поперёк движения детали в этом кадре</b>. У камеры сверху деталь
-        обычно уходит вглубь кадра — там нужна <b>горизонтальная</b>. У камеры сбоку деталь
-        едет слева направо — там <b>вертикальная</b>. У каждой камеры своя настройка.
+        Линия всегда вертикальная: деталь висит на подвеске и едет поперёк кадра,
+        вниз она не опускается. Ставь линию туда, где деталь видно целиком, и следи,
+        чтобы она была не у самого края — детали нужно место, чтобы войти в кадр
+        и выйти. Обе настройки сохраняются и восстанавливаются при запуске.
       </div>
       <label class="f">Считать только эти классы (через запятую, пусто = все)</label>
       <input type="text" id="only" placeholder="например: телефон, кружка, книга">
@@ -438,8 +500,8 @@ const $ = id => document.getElementById(id);
 // направление движения и путает «вперёд» с «назад»
 // Какая камера ведёт счёт. Вторая — контрольная: сравниваем её показания
 // с этими и по расхождению видим, что кто-то из них теряет детали.
-const COUNT_CAM = 'B', CHECK_CAM = 'A';
-let running = false, orient = 'v', mirror = false;
+const COUNT_CAM = 'A', CHECK_CAM = 'B';
+let running = false, mirror = false;
 let trainBusy = false;   // идёт ли сейчас обучение — тогда камеру запускать нельзя
 const defaultHint = $('hint').innerHTML;   // текст подсказки до того, как в неё впервые впишут ошибку
 
@@ -460,8 +522,10 @@ $('bStart').onclick = async () => {
     $('src').focus();
     return;
   }
+  // Ворота адресованы той камере, чей источник сейчас правим: line_pos у
+  // каждой свой, и отправить сюда чужое положение — значит сбить ей линию.
   await cfg({source:src, cam:srcWhich, conf:$('conf').value/100, mirror:mirror,
-             line_pos:$('pos').value/100, line_orient:orient, only:$('only').value});
+             line_pos:$('pos'+srcWhich).value/100, only:$('only').value});
   $('bStart').disabled = true;
   // Запускаем обе: две камеры — основной режим, а не что-то отдельное.
   // Камеру без источника сервер просто не поднимет и скажет почему.
@@ -490,26 +554,60 @@ $('bStop').onclick = async () => {
 // когда счёт у них набран за один и тот же отрезок времени.
 $('bReset').onclick = () => Promise.all(['A','B'].map(n => post('/reset?cam=' + n)));
 
-$('conf').oninput = e => { $('confV').textContent = e.target.value+'%'; cfg({conf:e.target.value/100}); };
-$('pos').oninput  = e => { $('posV').textContent  = e.target.value+'%';
-                           cfg({line_pos:e.target.value/100, cam:srcWhich}); };
-// Переворот направления. Нужен потому, что «вперёд» — это одно движение
-// конвейера, а не одна сторона кадра: сверху деталь уходит вглубь, сбоку идёт
-// поперёк. Без переворота одна камера пишет «вперёд», другая «назад» на одном
-// и том же проходе, и сверять их показания нельзя.
-$('dirNorm').onclick = () => setFlip(false);
-$('dirFlip').onclick = () => setFlip(true);
-function setFlip(v, quiet){
-  $('dirNorm').classList.toggle('act', !v);
-  $('dirFlip').classList.toggle('act', v);
-  $('dirHint').textContent = v
-    ? 'У этой камеры «вперёд» и «назад» поменяны местами.'
-    : 'У этой камеры направление как в кадре.';
-  if(!quiet) cfg({flip_dir: v, cam: srcWhich});
+// Крупный режим — на экране остаются только два кадра. Ничего не запускает и
+// не останавливает: это только вид, счёт и съёмка идут как шли.
+function setBig(on){ document.body.classList.toggle('big', on); }
+$('bBig').onclick   = () => setBig(true);
+$('bigOff').onclick = () => setBig(false);
+// Esc — привычный выход из «во весь экран», без него человек у конвейера
+// будет искать кнопку, которой на экране почти не видно.
+addEventListener('keydown', e => {
+  if(e.key === 'Escape' && document.body.classList.contains('big')) setBig(false);
+});
+
+// Ползунок шлёт событие на каждое движение мыши — это десятки запросов в
+// секунду, и столько же записей настройки на диск. Отправляем не чаще раза в
+// 120 мс (линия на видео всё ещё послушно идёт за рукой), но самое последнее
+// положение отправляем обязательно: иначе сохранится не то, где ползунок
+// остановился, а то, где он был за миг до этого.
+const flow = {};
+function stream(key, patch){
+  const f = flow[key] || (flow[key] = {at:0, t:null});
+  f.last = patch;
+  clearTimeout(f.t);
+  const send = () => { f.at = Date.now(); f.t = null; cfg(f.last); };
+  const wait = 120 - (Date.now() - f.at);
+  if(wait <= 0) send(); else f.t = setTimeout(send, wait);
 }
 
-$('orV').onclick  = () => setOrient('v');
-$('orH').onclick  = () => setOrient('h');
+// Порог — общий: камеры смотрят на один конвейер, и разный порог сделал бы их
+// показания несравнимыми. Сервер применяет его к обеим сам.
+$('conf').oninput = e => { $('confV').textContent = e.target.value+'%';
+                           stream('conf', {conf:e.target.value/100}); };
+
+// А ворота у каждой камеры свои: где деталь видно целиком, зависит от того,
+// с какой стороны камера смотрит. Поэтому у каждой свой ползунок и своё
+// направление, и каждый запрос адресован своей камере.
+['A','B'].forEach(n => {
+  $('pos'+n).oninput = e => { $('posV'+n).textContent = e.target.value+'%';
+                              stream('pos'+n, {line_pos:e.target.value/100, cam:n}); };
+  $('dirNorm'+n).onclick = () => setFlip(n, false);
+  $('dirFlip'+n).onclick = () => setFlip(n, true);
+});
+
+// Переворот направления. Нужен потому, что «вперёд» — это одно движение
+// конвейера, а не одна сторона кадра: камеры стоят по разные стороны, и без
+// переворота на одном и том же проходе одна пишет «вперёд», другая «назад»,
+// после чего сверять их показания нельзя.
+function setFlip(n, v, quiet){
+  $('dirNorm'+n).classList.toggle('act', !v);
+  $('dirFlip'+n).classList.toggle('act', v);
+  $('dirHint'+n).textContent = v
+    ? '«Вперёд» и «назад» у этой камеры поменяны местами.'
+    : 'Направление у этой камеры — как в кадре.';
+  if(!quiet) cfg({flip_dir: v, cam: n});
+}
+
 $('mirOn').onclick  = () => setMirror(true);
 $('mirOff').onclick = () => setMirror(false);
 $('expColor').onchange = () => cfg({expect_color: $('expColor').value});
@@ -556,19 +654,22 @@ function setWhich(w){
   if(known){
     setSource(known.source, true);      // показать то, что стоит у неё
     showCreds(known);
-    showGate(known);
   }
-  $('gateWho').textContent = 'Ворота камеры ' + w;
 }
 
-// Ворота у каждой камеры свои — показываем те, что у выбранной
-function showGate(c){
-  if(typeof c.flip_dir === 'boolean') setFlip(c.flip_dir, true);
-  if(c.line_orient === 'v' || c.line_orient === 'h') setOrient(c.line_orient, true);
-  if(typeof c.line_pos === 'number' && document.activeElement !== $('pos')){
-    $('pos').value = Math.round(c.line_pos * 100);
-    $('posV').textContent = $('pos').value + '%';
+// Показываем ворота так, как они реально стоят на сервере. Ползунок, который
+// сейчас под рукой, не трогаем — иначе он дёргался бы под пальцем. И не
+// трогаем, пока наша же отправка ещё в пути: сервер ответил бы прежним
+// значением и отбросил ползунок назад.
+function showGate(n, c){
+  if(typeof c.flip_dir === 'boolean') setFlip(n, c.flip_dir, true);
+  const el = $('pos'+n), busy = flow['pos'+n] && flow['pos'+n].t;
+  if(typeof c.line_pos === 'number' && document.activeElement !== el && !busy){
+    el.value = Math.round(c.line_pos * 100);
+    $('posV'+n).textContent = el.value + '%';
   }
+  $('gDot'+n).classList.toggle('on', !!c.feeding);
+  $('gSrc'+n).textContent = c.source_safe || c.source || '';
 }
 
 // Логин показываем как есть, пароль — только признаком, что он сохранён.
@@ -605,12 +706,6 @@ function setMirror(v, quiet){
   $('mirOff').classList.toggle('act', !v);
   if(!quiet) cfg({mirror:v});
 }
-function setOrient(o, quiet){
-  orient = o;
-  $('orV').classList.toggle('act', o==='v');
-  $('orH').classList.toggle('act', o==='h');
-  if(!quiet) cfg({line_orient:o, cam:srcWhich});
-}
 // ── состояние сервера при загрузке страницы ───────────────────────────────
 // Панель могли перезагрузить, пока сервис уже работает — скажем, стримит телефон.
 // Тогда в поле источника снова стоит «0», и первый же «Запустить» перебил бы
@@ -621,15 +716,12 @@ let stateLoaded = false, devLoaded = false;
 function applyServerState(s){
   if(s.source)                       setSource(s.source, true);
   if(typeof s.mirror === 'boolean')  setMirror(s.mirror, true);
-  if(s.line_orient === 'v' || s.line_orient === 'h') setOrient(s.line_orient, true);
   if(typeof s.conf === 'number'){
     $('conf').value = Math.round(s.conf * 100);
     $('confV').textContent = $('conf').value + '%';
   }
-  if(typeof s.line_pos === 'number'){
-    $('pos').value = Math.round(s.line_pos * 100);
-    $('posV').textContent = $('pos').value + '%';
-  }
+  // положение ворот сюда не подставляем: /stats — это одна камера A, а ворот
+  // теперь двое. Их заполняет опрос /cams, у каждой камеры своё.
   if(Array.isArray(s.only)) $('only').value = s.only.join(', ');
   if(typeof s.expect_color === 'string') $('expColor').value = s.expect_color;
   // сервис уже считает — показываем поток, а не заглушку
@@ -810,7 +902,8 @@ function dualNameError(v){
 
 function refreshDualBtn(){
   const bad = dualNameError($('dualName').value.trim());
-  $('dualRec').disabled = dualCapturing ? false : (bad !== '' || !dualConnA || !dualConnB);
+  // Хватает одной живой камеры: кадры со второй лучше, чем никаких.
+  $('dualRec').disabled = dualCapturing ? false : (bad !== '' || !(dualConnA || dualConnB));
 }
 // Имя детали помним между заходами: снимают одну и ту же деталь помногу
 // подходов, и вбивать её название после каждого обновления страницы — морока.
@@ -876,7 +969,23 @@ async function dualTick(){
   // чем закончился подбор пути к потоку и что с камерой сейчас
   const me = d.cams[srcWhich], st = $('srcState');
   showCreds(me);
-  showGate(me);
+  // ворота — у обеих камер сразу, независимо от того, какая выбрана выше
+  showGate('A', a);
+  showGate('B', b);
+  // Служба поднялась не на той модели, что выбирали (файл модели пропал).
+  // Без этой строки подмена была бы молчаливой и выглядела бы как «камера
+  // вдруг перестала узнавать детали».
+  const note = a.model_note || b.model_note || '';
+  const nEl = $('modelNote');
+  nEl.style.display = note ? '' : 'none';
+  nEl.textContent = note ? '⚠ ' + note : '';
+  // порог общий, но панель может быть открыта и во второй вкладке — держим
+  // ползунок в согласии с сервером, пока его не крутят прямо сейчас
+  const cs = flow['conf'] && flow['conf'].t;
+  if(typeof a.conf === 'number' && document.activeElement !== $('conf') && !cs){
+    $('conf').value = Math.round(a.conf * 100);
+    $('confV').textContent = $('conf').value + '%';
+  }
   if(!devLoaded && me.device){ devLoaded = true; setDevice(me.device, true); }
   if(me.error){        st.className = 'hint err';  st.textContent = '⚠ ' + me.error; }
   else if(me.hint){    st.className = 'hint good'; st.textContent = '✓ ' + me.hint; }
@@ -895,12 +1004,24 @@ async function dualTick(){
   $('dotB').classList.toggle('on', dualConnB);
   // говорим и про источник: с двумя камерами легко перепутать, какая где
   // в подписях показываем источник без пароля: панель бывает открыта в цеху
-  const state = (v, on) => { const src = v.source_safe || v.source;
-    return on ? `идут кадры · ${src}` : (v.running ? `нет кадров · ${src}` : `не запущена · ${src}`); };
+  const state = (v, on) => {
+    const src = v.source_safe || v.source;
+    if(on)            return `идут кадры · ${src}`;
+    // Подключение к недоступной камере длится около 30 секунд — молчать всё
+    // это время нельзя, иначе выглядит как поломка.
+    if(v.connecting)  return `подключаюсь… · ${src}`;
+    if(v.error)       return `⚠ ${v.error}`;
+    if(v.running)     return `нет кадров · ${src}`;
+    return `не запущена · ${src}`;
+  };
   $('dualStateA').textContent = state(a, dualConnA);
   $('dualStateB').textContent = state(b, dualConnB);
 
-  dualCapturing = a.capturing && b.capturing;
+  // Снимаем, если снимает хотя бы одна камера. Было «и», и когда вторая
+  // недоступна, панель через секунду решала, что съёмка кончилась:
+  // кнопка возвращалась в «Снимать», счётчик кадров пропадал, — хотя
+  // кадры при этом исправно писались на диск.
+  dualCapturing = a.capturing || b.capturing;
   $('dualName').disabled = dualCapturing;
   $('dualRec').classList.toggle('primary', !dualCapturing);
   const total = (a.capture_count||0) + (b.capture_count||0);
@@ -912,11 +1033,28 @@ async function dualTick(){
   h.className = 'hint';
   if(dualCapturing){
     h.innerHTML = `Снимаю: A — <b>${a.capture_count||0}</b>, B — <b>${b.capture_count||0}</b> кадров.`;
+  }else if(dualConnA !== dualConnB){
+    const live = dualConnA ? 'A' : 'B', dead = dualConnA ? 'B' : 'A';
+    const v = dualConnA ? b : a;
+    h.className = 'hint warn';
+    h.innerHTML = `Работает только камера <b>${live}</b> — снимать можно, кадры пойдут с неё одной. `
+                + `Камера ${dead}: ${v.connecting ? 'подключаюсь…' : (v.error || 'кадров нет')}`;
   }else if(!dualConnA || !dualConnB){
     const dead = [!dualConnA && 'A', !dualConnB && 'B'].filter(Boolean).join(' и ');
-    h.innerHTML = `Нет кадров с камеры <b>${dead}</b>. Впиши ей источник в «Источник и модель» `
-                + '(ссылка <code>rtsp://…</code> или номер веб-камеры) и нажми «Запустить». '
-                + 'С телефонов — <code>/phone</code> и <code>/phone?cam=B</code>.';
+    const bad  = [!dualConnA && a, !dualConnB && b].filter(Boolean);
+    const why  = bad.find(v => v.error);
+    const wait = bad.some(v => v.connecting);
+    h.className = 'hint warn';
+    if(wait){
+      h.innerHTML = `Подключаюсь к камере <b>${dead}</b>… Это занимает до полуминуты, `
+                  + 'если камера не отвечает.';
+    }else if(why){
+      h.innerHTML = `Камера <b>${dead}</b> не даёт кадров: ${why.error}`;
+    }else{
+      h.innerHTML = `Нет кадров с камеры <b>${dead}</b>. Впиши ей источник в «Источник и модель» `
+                  + '(ссылка <code>rtsp://…</code> или номер веб-камеры) и нажми «Запустить». '
+                  + 'С телефонов — <code>/phone</code> и <code>/phone?cam=B</code>.';
+    }
   }else{
     // Кнопка гасла и из-за имени детали тоже, но об этом нигде не говорилось —
     // выглядело как «съёмка сломалась». Теперь причина названа.
@@ -952,16 +1090,29 @@ function renderCamDiff(d){
     return;
   }
   const totalSpread = rows.reduce((s, [, v]) => s + v.spread, 0);
+  const flipped = rows.filter(([, v]) => v.flipped).map(([k]) => k);
   status.className = 'hint' + (totalSpread ? ' warn' : ' good');
   status.innerHTML = totalSpread
     ? `⚠ Суммарное расхождение: <b>${totalSpread}</b> — смотри по классам ниже, где именно теряются детали.`
     : '✓ Камеры совпадают, расхождений нет.';
-  const totalGap = Math.abs((a.total_in || 0) - (b.total_in || 0));
+  // Разное направление — не потеря детали, а перевёрнутые ворота у одной из
+  // камер. Лечится переключателем «перевернуть», а не поиском пропаж.
+  if(flipped.length){
+    status.className = 'hint warn';
+    status.innerHTML += `<br>⚠ Разное направление у камер: <b>${flipped.join(', ')}</b>` +
+      ' — одна пишет «вперёд» там, где вторая «назад». Поправь переключателем в настройке ворот.';
+  }
+  // Считаем все пересечения ворот, а не только «вперёд»: деталь, прошедшая
+  // назад, — такая же проверка того, что камера её увидела.
+  const tot = v => (v.total_in || 0) + (v.total_out || 0);
+  const totalGap = Math.abs(tot(a) - tot(b));
+  const dir = v => (v.a_out || v.b_out)
+    ? `<div class="sub">${v.a_in}↑ ${v.a_out}↓ · ${v.b_in}↑ ${v.b_out}↓</div>` : '';
   tbl.innerHTML = rows.map(([k, v]) =>
-      `<tr><td>${k}</td><td class="num">${v.a}</td><td class="num">${v.b}</td>
+      `<tr><td>${k}${dir(v)}</td><td class="num">${v.a}</td><td class="num">${v.b}</td>
        <td class="num" style="color:${v.spread ? 'var(--warn)' : 'var(--ok)'}">${v.spread}</td></tr>`).join('')
-    + `<tr><td style="color:var(--muted)">всего</td><td class="num">${a.total_in || 0}</td>
-       <td class="num">${b.total_in || 0}</td>
+    + `<tr><td style="color:var(--muted)">всего</td><td class="num">${tot(a)}</td>
+       <td class="num">${tot(b)}</td>
        <td class="num" style="color:${totalGap ? 'var(--warn)' : 'var(--ok)'}">${totalGap}</td></tr>`;
 }
 

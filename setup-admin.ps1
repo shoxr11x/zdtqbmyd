@@ -27,12 +27,13 @@ if (-not (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole(
 
 # ── 1. брандмауэр ──────────────────────────────────────────────────────────
 Get-NetFirewallRule -DisplayName "Vision*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-# 8010 — http для компьютера, 8443 — https для телефона, 8090 — перенаправление.
+# 8010 — http, панель и API. 8443 — https для телефона. 8011 — перенаправление.
+# 8090 НЕ открываем: его занимает zigbee2mqtt из MES-системы в Docker.
 # Порты 80, 443 и 8004 НЕ трогаем: их занимает MES-система в Docker.
 New-NetFirewallRule -DisplayName $ruleName `
     -Direction Inbound -Action Allow -Protocol TCP `
-    -LocalPort 8010, 8090, 8443 -Profile Any -RemoteAddress LocalSubnet | Out-Null
-Write-Host "✓ Порты 8010, 8090 и 8443 открыты для локальной сети." -ForegroundColor Green
+    -LocalPort 8010, 8011, 8443 -Profile Any -RemoteAddress LocalSubnet | Out-Null
+Write-Host "✓ Порты 8010, 8011 и 8443 открыты для локальной сети." -ForegroundColor Green
 
 # ── 2. имена в файле hosts ────────────────────────────────────────────────
 $lines = Get-Content $hostsFile -ErrorAction SilentlyContinue

@@ -59,16 +59,30 @@ from ultralytics import YOLO
 
 BASE = Path(__file__).parent
 MODELS_DIR = BASE / "models"
+# Готовые модели: их не надо иметь на диске заранее, Ultralytics скачает сама.
+# Список нужен в двух местах — в перечне для панели и при проверке имени,
+# сохранённого с прошлого запуска, — поэтому он здесь, а не внутри одного из них.
+BUILTIN_MODELS = ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt"]
 DATASET = BASE / "dataset"   # собранный для обучения датасет: images/, labels/, data.yaml
 RAW = DATASET / "raw"        # снятые кадры по папкам-классам, разметка лежит рядом
 RUNS = BASE / "runs"         # сюда Ultralytics складывает ход обучения
 CERTS = BASE / "certs"
-STATE_FILE = BASE / "state.json"     # счётчики: переживают перезапуск
-EVENTS_FILE = BASE / "events.jsonl"  # журнал пересечений, строка на событие
-# Порты 80, 443 и 8004 заняты MES-системой (nginx и turnstile_gateway в Docker) —
+# Куда писать то, что меняется от запуска к запуску. Рядом с кодом — когда
+# служба запущена как есть; в контейнере код лежит в образе, а это должно
+# пережить пересборку, поэтому путь задаётся через VISION_DATA и монтируется
+# томом. Пусто — значит рядом с кодом, как было.
+DATA_DIR = Path(os.environ.get("VISION_DATA") or BASE)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+STATE_FILE = DATA_DIR / "state.json"     # счётчики: переживают перезапуск
+EVENTS_FILE = DATA_DIR / "events.jsonl"  # журнал пересечений, строка на событие
+# Порты 80, 443, 8000-8004, 8090, 9000-9001 заняты MES-системой в Docker —
 # берём заведомо свободные, чтобы ничего ей не сломать.
+#
+# 8090 раньше стоял здесь и это была ошибка: его же публикует zigbee2mqtt из
+# MES. Оба захвата проходили успешно (MES садился на IPv6, мы на IPv4), и кто
+# ответит — зависело от того, во что разрешится адрес. Проверено: занят.
 PORT = 8010          # http — для этого компьютера, без ругани на сертификат
-PORT_HTTP = 8090     # http — только перенаправляет на https
+PORT_HTTP = 8011     # http — только перенаправляет на https
 PORT_TLS = 8443      # https — сюда ходит телефон, здесь работает камера
 HOSTNAME = "vision"  # имя в локальной сети: vision.local
 STALE_AFTER = 2.0    # через сколько секунд молчания источника считать данные протухшими
@@ -305,7 +319,7 @@ class Vision:
         self.name = name
         # Камера A пишет в прежний файл — счёт, накопленный до появления второй
         # камеры, не должен пропасть. Остальные заводят себе свой.
-        self.state_file = STATE_FILE if name == "A" else BASE / f"state_{name.lower()}.json"
+        self.state_file = STATE_FILE if name == "A" else DATA_DIR / f"state_{name.lower()}.json"
         # замок для готовых кадров и статистики
         self.lock = threading.Lock()
         self.frame_id = 0
@@ -333,6 +347,11 @@ class Vision:
         # работе — 32 мс на кадр против 16 у nano, то есть 25 распознаваний
         # в секунду вместо 33. Для конвейера и того, и другого с большим запасом.
         self.model_name = "yolo11m.pt"
+        # Почему работает не та модель, которую выбирали. Отдельным полем, а не
+        # через error: запуск камеры первым делом гасит error, и предупреждение
+        # исчезало бы через секунду после старта — то есть ровно тогда, когда
+        # человек до панели и дойдёт.
+        self.model_note = ""
         self.model_imgsz = 640     # размер кадра, на котором обучена модель
         self.names: dict[int, str] = {}
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -394,16 +413,30 @@ class Vision:
         # а значит и блокировки. Ту, что не заработала ни разу, не трогаем:
         # там причина может быть в пароле, и повторы её заблокируют.
         self.ever_worked = False
+        # Идёт попытка открыть источник. Подключение к недоступной камере
+        # висит около 30 секунд (столько FFmpeg ждёт ответа), и всё это
+        # время панель молчала: «работает», кадров нет, ошибки нет —
+        # выглядело как поломка кнопки съёмки.
+        self.connecting = False
         self._shown_at = 0.0
         self.conf = 0.45             # порог уверенности
         self.line_pos = 0.5          # положение «ворот», 0..1
-        self.line_orient = "v"       # 'v' вертикальная | 'h' горизонтальная
+        # Ворота всегда вертикальные. Горизонтальные были и оказались ловушкой:
+        # деталь висит на подвеске и едет ПОПЕРЁК кадра, вниз она не опускается,
+        # поэтому горизонтальную линию её центр не пересекает никогда. Замерено
+        # на живом кадре: центры четырёх деталей на 44-50% высоты при линии на
+        # 78% — камера не считала ничего и молчала об этом.
         # Перевернуть направление у этой камеры: чтобы «вперёд» у обеих
         # значило одно и то же движение конвейера.
         self.flip_dir = False
         # Ширина полосы нечувствительности вокруг линии, доля кадра.
         # 4% — на кадре 1280 это ~50 точек, дрожание рамки заметно меньше.
         self.line_dead = 0.04
+        # Насколько объект может сместиться за кадр, доля ширины. Больше —
+        # значит трекер отдал номер другой детали, а не деталь переехала.
+        # 25% при восьми кадрах в секунду — это скорость, на которой деталь
+        # пересекала бы весь кадр за полсекунды; конвейеру такое не снилось.
+        self.max_step = 0.25
         self.only: set[str] = set()  # какие классы считать (пусто = все)
 
         # съёмка датасета: кадры уходят в dataset/raw/<класс>/
@@ -450,8 +483,10 @@ class Vision:
         self.counts: dict[str, dict[str, int]] = defaultdict(lambda: {"in": 0, "out": 0})
         self.live: dict[str, int] = {}
         self.prev_side: dict[int, int] = {}     # track_id -> с какой стороны линии был
+        self.prev_cx: dict[int, int] = {}       # track_id -> где был центр в прошлый раз
         self.seen_at: dict[int, float] = {}     # track_id -> когда видели в последний раз
         self.counted_at: dict[int, float] = {}  # track_id -> когда посчитали в последний раз
+        self.jumps = 0                          # сколько раз номер перескочил на другую деталь
         self.events: deque = deque(maxlen=60)   # журнал пересечений
 
         # цвет детали
@@ -500,13 +535,20 @@ class Vision:
                     # Источник тоже запоминаем. Ссылку rtsp:// с логином и
                     # паролем не будешь набирать заново после каждого
                     # перезапуска, а на заводе перезапуск — обычное дело.
-                    # Файл в .gitignore, наружу не уедет.
+                    # Файл в .gitignore, наружу не уедет. Здесь ссылка нужна
+                    # ПОЛНАЯ, вместе с паролем: иначе после перезапуска камера
+                    # не подключится. Наружу, в ответы службы, уходит только
+                    # укороченная — см. source_safe.
                     "source": self.source,
                     "want_running": self.want_running,
                     "ever_worked": self.ever_worked,
                     "line_pos": self.line_pos,
-                    "line_orient": self.line_orient,
                     "flip_dir": self.flip_dir,
+                    # Порог уверенности и список считаемых классов раньше не
+                    # сохранялись: их подбирают под цех руками, а после каждого
+                    # перезапуска они молча возвращались к 45% и «все классы».
+                    "conf": self.conf,
+                    "only": sorted(self.only),
                     "device": self.device,
                     "mirror": self.mirror,
                     "rotate": self.rotate,
@@ -543,6 +585,10 @@ class Vision:
         self.ever_worked = bool(d.get("ever_worked"))
         if isinstance(d.get("line_pos"), (int, float)):
             self.line_pos = max(0.02, min(0.98, float(d["line_pos"])))
+        if isinstance(d.get("conf"), (int, float)):
+            self.conf = max(0.05, min(0.95, float(d["conf"])))
+        if isinstance(d.get("only"), list):
+            self.only = {str(x) for x in d["only"] if str(x).strip()}
         if d.get("device") == "cpu" or (d.get("device") == "cuda"
                                         and torch.cuda.is_available()):
             self.device = d["device"]
@@ -552,8 +598,20 @@ class Vision:
             self.mirror = d["mirror"]
         if isinstance(d.get("flip_dir"), bool):
             self.flip_dir = d["flip_dir"]
-        if d.get("line_orient") in ("v", "h"):
-            self.line_orient = d["line_orient"]
+        # Модель. Записывалась она и раньше, а вот читать её забыли — и каждый
+        # перезапуск молча возвращал службу на обычную yolo11m, которая заводских
+        # деталей не знает вовсе. Со стороны это выглядит не как сброс настройки,
+        # а как «камера перестала распознавать»: счёт идёт, рамок нет.
+        want = (d.get("model") or "").strip()
+        if want and want != self.model_name:
+            if want in BUILTIN_MODELS or (MODELS_DIR / want).exists():
+                self.model_name = want
+            else:
+                # Файл могли удалить между запусками. Молча подменять модель
+                # нельзя — со стороны это выглядит как «сломалось распознавание».
+                self.model_note = (f"Модель {want} не найдена в models/ — "
+                                   f"работаю на {self.model_name}. "
+                                   f"Выбери модель заново или обучи новую.")
         self.cam_user = d.get("cam_user") or ""
         self.cam_pass = d.get("cam_pass") or ""
         src = (d.get("source") or "").strip()
@@ -593,6 +651,10 @@ class Vision:
         path = str(local) if local.exists() else name
         self.model = YOLO(path)
         self.model_name = name
+        # Записку про подменённую модель здесь НЕ трогаем: при автозапуске
+        # камера грузит модель сама, и записка стиралась бы ровно в тот момент,
+        # когда должна была появиться. Гасим её там, где модель действительно
+        # выбирают заново, — в /config.
         self.names = self.model.names
         # На каком размере кадра модель обучалась. Кормить её кадром другого
         # размера — терять качество: замерено, что модели, обученной на 640,
@@ -616,6 +678,7 @@ class Vision:
         """Забыть, кто с какой стороны линии был. Счёт не трогаем."""
         with self.lock:
             self.prev_side.clear()
+            self.prev_cx.clear()
             self.seen_at.clear()
             self.counted_at.clear()
 
@@ -624,6 +687,7 @@ class Vision:
         with self.lock:
             self.counts.clear()
             self.prev_side.clear()
+            self.prev_cx.clear()
             self.seen_at.clear()
             self.counted_at.clear()
             self.events.clear()
@@ -936,7 +1000,11 @@ class Vision:
             # отказ хуже, чем непонятная ошибка: он не пускает к рабочей камере.
             # От перебора защищает не проверка, а то, что попытка ровно одна на
             # нажатие — повторов в программе не осталось.
-            cap = self._open_capture()
+            self.connecting = True
+            try:
+                cap = self._open_capture()
+            finally:
+                self.connecting = False
             if not cap.isOpened():
                 if self._alive(me):
                     src = self.source.strip()
@@ -1059,15 +1127,35 @@ class Vision:
                 # #1 посчитан пять раз, #61 и #66 — по три.
                 # Внутри полосы сторону не меняем: значит и пересечения нет.
                 cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                if self.line_orient == "v":
-                    dist, dead = cx - line_x, w * self.line_dead
-                else:
-                    dist, dead = cy - line_y, h * self.line_dead
+                dist, dead = cx - line_x, w * self.line_dead
                 was = self.prev_side.get(tid)
                 if abs(dist) < dead:
                     side = was          # в полосе — сторона прежняя
                 else:
                     side = 1 if dist > 0 else -1
+
+                # Третий заслон, и самый важный: номер объекта у трекера не
+                # вечен — он умеет перескочить с одной детали на другую. Тогда
+                # «позиция объекта» прыгает через полкадра, память о стороне
+                # привязана к номеру, и это читается как пересечение линии,
+                # хотя ничего не двигалось.
+                #
+                # Замерено в цеху при полностью неподвижном конвейере: номер 2
+                # перескакивал между деталью слева от линии и деталью справа и
+                # давал по событию каждые две секунды — 335 штук за смену.
+                # Полоса нечувствительности тут бессильна: прыжок в сотни
+                # пикселей проходит её насквозь.
+                #
+                # Настоящая деталь на конвейере за кадр смещается на десятки
+                # пикселей, а не на треть кадра. Такой скачок — не движение,
+                # а подмена объекта: начинаем его сторону заново и не считаем.
+                prev_cx = self.prev_cx.get(tid)
+                jumped = prev_cx is not None and abs(cx - prev_cx) > w * self.max_step
+                self.prev_cx[tid] = cx
+                if jumped:
+                    self.jumps += 1
+                    was = None          # прежняя сторона была не про эту деталь
+
                 if side is not None:
                     self.prev_side[tid] = side
                 self.seen_at[tid] = time.time()
@@ -1109,6 +1197,7 @@ class Vision:
             now = time.time()
             for k in [k for k, t in self.seen_at.items() if now - t > 30]:
                 self.prev_side.pop(k, None)
+                self.prev_cx.pop(k, None)
                 self.seen_at.pop(k, None)
                 self.counted_at.pop(k, None)
 
@@ -1134,18 +1223,11 @@ class Vision:
         # «Ворота»: сама линия и полоса нечувствительности вокруг неё. Полосу
         # показываем нарочно — по ней видно, где деталь ещё не считается, и
         # понятно, почему дрожащая у линии рамка не даёт лишних срабатываний.
-        if self.line_orient == "v":
-            x = int(w * self.line_pos)
-            d = max(1, int(w * self.line_dead))
-            cv2.rectangle(frame, (x - d, 0), (x + d, h), (70, 130, 150), 1)
-            cv2.line(frame, (x, 0), (x, h), (60, 220, 255), 3)
-            cv2.line(frame, (x, 0), (x, h), (255, 255, 255), 1)
-        else:
-            y = int(h * self.line_pos)
-            d = max(1, int(h * self.line_dead))
-            cv2.rectangle(frame, (0, y - d), (w, y + d), (70, 130, 150), 1)
-            cv2.line(frame, (0, y), (w, y), (60, 220, 255), 3)
-            cv2.line(frame, (0, y), (w, y), (255, 255, 255), 1)
+        x = int(w * self.line_pos)
+        d = max(1, int(w * self.line_dead))
+        cv2.rectangle(frame, (x - d, 0), (x + d, h), (70, 130, 150), 1)
+        cv2.line(frame, (x, 0), (x, h), (60, 220, 255), 3)
+        cv2.line(frame, (x, 0), (x, h), (255, 255, 255), 1)
 
         # Подписи кириллицей: готовую полоску кладём прямо в кадр по маске.
         # Весь кадр через PIL больше не гоняем — см. label_mask().
@@ -1182,13 +1264,19 @@ class Vision:
                        "отрисовка": round(self.t_draw, 1)},
             "device": "GPU (CUDA)" if self.device == "cuda" else "CPU",
             "model": self.model_name,
+            "model_note": self.model_note,
+            # сколько раз номер объекта перескочил на другую деталь и
+            # событие было подавлено — по нему видно, часто ли путается трекер
+            "jumps": self.jumps,
             "model_imgsz": self.model_imgsz,
-            "source": self.source,
+            # Наружу — только без пароля: раньше полную ссылку мог прочитать
+            # любой в той же сети, а туда входит пароль от камеры.
+            "source": self.source_safe,
             "phone": self.phone_connected,
             "mirror": self.mirror,
             "conf": self.conf,
             "line_pos": self.line_pos,
-            "line_orient": self.line_orient,
+            "line_orient": "v",   # ворота всегда вертикальные
             "only": sorted(self.only),
             "counts": {ru(k): v for k, v in counts.items()},
             "live": {ru(k): v for k, v in live.items()},
@@ -1229,7 +1317,6 @@ class Config(BaseModel):
     source: str | None = None
     conf: float | None = None
     line_pos: float | None = None
-    line_orient: str | None = None
     flip_dir: bool | None = None   # перевернуть «вперёд/назад» у этой камеры
     only: str | None = None
     model: str | None = None
@@ -1344,7 +1431,7 @@ async def ws_camera(ws: WebSocket, cam_name: str = Query("A", alias="cam")):
                            "color": b[8]}
                           for b in boxes],
                 "line_pos": v.line_pos,
-                "line_orient": v.line_orient,
+                "line_orient": "v",
                 "in": sum(c["in"] for c in counts.values()),
                 "out": sum(c["out"] for c in counts.values()),
                 "fps_detect": round(v._rate(v.hist_detect), 1),
@@ -1437,14 +1524,19 @@ def cams():
     for name, v in CAMS.items():
         s = v.stats()
         out[name] = {
-            "running": s["running"], "error": s["error"], "source": s["source"],
-            "model": s["model"], "fps": s["fps"], "fps_detect": s["fps_detect"],
+            "running": s["running"], "error": s["error"], "source": s["source"],  # уже без пароля
+            "model": s["model"], "model_note": v.model_note,
+            "fps": s["fps"], "fps_detect": s["fps_detect"],
             "counts": s["counts"], "total_in": s["total_in"], "total_out": s["total_out"],
             "phone": s["phone"], "feeding": v.feeding, "source_safe": v.source_safe,
+            "connecting": v.connecting,
             "hint": v.hint,
-            # ворота и устройство — панель показывает их у выбранной камеры
-            "line_pos": v.line_pos, "line_orient": v.line_orient,
+            # ворота — у каждой камеры свои, панель показывает обе сразу
+            "line_pos": v.line_pos, "line_orient": "v",
             "flip_dir": v.flip_dir,
+            # порог общий для обеих, но пусть панель берёт его отсюда же,
+            # а не из отдельного запроса по одной камере
+            "conf": v.conf,
             "rotate": v.rotate,
             "device": v.device,
             # сам пароль наружу не отдаём — только признак, что он есть
@@ -1459,12 +1551,87 @@ def cams():
     classes = set(a["counts"]) | set(b["counts"])
     diff = {}
     for k in classes:
-        ai = (a["counts"].get(k) or {}).get("in", 0)
-        bi = (b["counts"].get(k) or {}).get("in", 0)
-        if ai or bi:
-            diff[k] = {"a": ai, "b": bi, "spread": abs(ai - bi)}
+        ca = a["counts"].get(k) or {}
+        cb = b["counts"].get(k) or {}
+        ai, ao = ca.get("in", 0), ca.get("out", 0)
+        bi, bo = cb.get("in", 0), cb.get("out", 0)
+        # Сравниваем ВСЕ пересечения ворот, а не только «вперёд». Раньше
+        # считалось по одному «in», и это врало дважды: деталь, прошедшую
+        # только назад, из таблицы выбрасывало совсем (bagaj: 0 вперёд,
+        # 3 назад — класса просто не было), а классу, идущему в основном
+        # назад, показывало ложное согласие (traktor_rama: у A восемь
+        # проходов против одного у B, а в таблице стояло «расхождение 0»).
+        ta, tb = ai + ao, bi + bo
+        if ta or tb:
+            diff[k] = {"a": ta, "b": tb, "spread": abs(ta - tb),
+                       # направление отдаём отдельно: если одна камера пишет
+                       # «вперёд» там, где вторая пишет «назад», это не потеря
+                       # детали, а перевёрнутое направление у одной из них
+                       "a_in": ai, "a_out": ao, "b_in": bi, "b_out": bo,
+                       "flipped": bool(ta and tb and (ai > ao) != (bi > bo))}
     return {"cams": out, "diff": diff,
             "both_running": all(v.running for v in CAMS.values())}
+
+
+# ── API для показа: только счёт и распознанное ───────────────────────────────
+# Отдельный адрес, а не /stats, по трём причинам. Во-первых, /stats отдаёт
+# наружу лишнее для показа: адрес камеры, состояние съёмки, настройки. Во-вторых,
+# он меняется вместе с панелью, а этот должен стоять на месте — на него будет
+# завязана чужая система. В-третьих, здесь только чтение: ни запустить, ни
+# остановить, ни настроить отсюда нельзя, и пароля от камеры тут нет вовсе.
+#
+# Ключи латиницей: читать это будет не человек, а другая программа, и кириллица
+# в именах полей ей только мешает. Имена классов — как есть, они и есть данные.
+API_STARTED = time.time()
+
+
+@app.get("/api/v1/status")
+def api_status():
+    """Что сейчас видно и сколько чего прошло через ворота."""
+    # Считает камера A — она же официальный счёт в панели. Камера B стоит
+    # сбоку для проверки, и складывать их нельзя: обе видят ОДНУ деталь,
+    # сумма означала бы, что каждая прошла дважды.
+    main, check = CAMS["A"], CAMS["B"]
+    # По разу на камеру: stats() берёт замок и собирает немаленький словарь,
+    # а сюда стучатся раз в секунду.
+    s, sc = main.stats(), check.stats()
+
+    counts = []
+    for name, c in sorted(s["counts"].items()):
+        fwd, back = int(c.get("in", 0)), int(c.get("out", 0))
+        counts.append({"class": name, "forward": fwd, "back": back,
+                       "total": fwd + back})
+
+    def cam_state(v):
+        return {"running": v.running, "receiving_frames": v.feeding,
+                "fps": round(v._rate(v.hist_video), 1)}
+
+    return {
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "uptime_sec": int(time.time() - API_STARTED),
+        "model": s["model"],
+        "device": s["device"],
+        # «сейчас в кадре» пустеет само, если источник замолчал: застывший
+        # список выглядел бы как деталь, висящая на конвейере вечно
+        "in_frame": [{"class": k, "count": n} for k, n in sorted(s["live"].items())],
+        "counts": counts,
+        "total": sum(c["total"] for c in counts),
+        "total_forward": s["total_in"],
+        "total_back": s["total_out"],
+        # Камера B — проверочная. Её счёт отдаём отдельно и НЕ складываем:
+        # расхождение показывает, что одна из камер детали теряет.
+        "cameras": {"counting": cam_state(main), "checking": cam_state(check)},
+        "check_total": sc["total_in"] + sc["total_out"],
+    }
+
+
+@app.get("/api/v1/health")
+def api_health():
+    """Живо ли и идут ли кадры — для мониторинга, одним коротким ответом."""
+    ok = any(v.feeding for v in CAMS.values())
+    return {"ok": ok, "cameras_receiving": [n for n, v in CAMS.items() if v.feeding],
+            "time": datetime.now().isoformat(timespec="seconds")}
+
 
 
 def _set_gap(v, gap):
@@ -1511,22 +1678,25 @@ def capture_both(c: CaptureBothCfg):
     for v in (a, b):
         _set_gap(v, c.gap)
     if c.active:
-        # Готовность — это «идут кадры», а не «подключён телефон». Раньше здесь
-        # стояло phone_connected, и со ссылками rtsp:// или веб-камерами съёмку
-        # нельзя было включить вообще: телефона нет, значит «не подключено».
-        # А на конвейере как раз камеры, а не телефоны.
-        for v in (a, b):
-            if not v.feeding:
-                return fail(f"Камера {v.name} не даёт кадров. "
-                            f"Проверь источник «{v.source_safe}» и нажми «Запустить».")
+        # Готовность — это «идут кадры», а не «подключён телефон»: на конвейере
+        # источник это ссылка rtsp://, телефона там нет вовсе.
+        # Достаточно ОДНОЙ живой камеры. Раньше требовались обе, и когда одна
+        # отваливалась, снимать было нельзя вовсе — а кадры со второй лучше,
+        # чем никаких. В имени файла есть буква камеры, так что кадры не
+        # перемешаются, и класс с одним ракурсом ничему не мешает.
+        live = [v for v in (a, b) if v.feeding]
+        if not live:
+            dead = "; ".join(f"{v.name}: {v.error or 'кадров нет'}" for v in (a, b))
+            return fail(f"Ни одна камера не даёт кадров. {dead}")
         name = c.name or a.capture_name
-        a.capture_start(name)
-        b.capture_start(name)
+        for v in live:
+            v.capture_start(name)
     else:
         a.capture_stop()
         b.capture_stop()
     return {
-        "capturing": a.capturing and b.capturing,
+        # снимаем, если снимает хотя бы одна: вторая может быть недоступна
+        "capturing": a.capturing or b.capturing,
         "name": a.capture_name,
         "count": a.capture_saved + b.capture_saved,
         "skipped": a.capture_skipped + b.capture_skipped,
@@ -2659,9 +2829,8 @@ def lan():
 
 @app.get("/models")
 def models(cam_name: str = Query("A", alias="cam")):
-    builtin = ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt"]
     own = [p.name for p in MODELS_DIR.glob("*.pt")]
-    return {"builtin": builtin, "own": own, "current": cam(cam_name).model_name}
+    return {"builtin": BUILTIN_MODELS, "own": own, "current": cam(cam_name).model_name}
 
 
 @app.post("/start")
@@ -2796,6 +2965,11 @@ def _set_source(v: Vision, src: str):
     одной ошибки при этом не показано. Поэтому только через полный перезапуск.
     """
     src = src.strip()
+    # Панель показывает адрес без пароля и его же присылает обратно, если его
+    # не трогали. Принять такую строку буквально нельзя — камера получила бы
+    # логин «***» вместо настоящего.
+    if src == v.source_safe:
+        return
     if not src:
         # пустое поле — не источник; молча ставить «0» тоже нельзя,
         # иначе человек не поймёт, почему открылась не та камера
@@ -2877,11 +3051,9 @@ def config(c: Config):
     if c.flip_dir is not None:
         tgt.flip_dir = bool(c.flip_dir)
         tgt._save_state(force=True)
-    if c.line_pos is not None or c.line_orient in ("v", "h"):
+    if c.line_pos is not None:
         if c.line_pos is not None:
             tgt.line_pos = max(0.02, min(0.98, c.line_pos))
-        if c.line_orient in ("v", "h"):
-            tgt.line_orient = c.line_orient
         # Сразу на диск. Обычное сохранение идёт по событиям на воротах, а их
         # может не быть часами — и настройка, сделанная руками, терялась при
         # перезапуске. Ставят её один раз под вид камеры, терять нельзя.
@@ -2918,10 +3090,17 @@ def config(c: Config):
                 # разрешаем писать по-русски: переводим обратно в исходные имена модели
                 back = {name: k for k, name in RU.items()}
                 v.only = {back.get(x, x) for x in wanted}
+            if c.conf is not None or c.only is not None:
+                # Сразу на диск, как и ворота: обычная запись идёт по событиям
+                # на воротах, а их может не быть часами, и настройка, сделанная
+                # руками, терялась при перезапуске.
+                v._save_state(force=True)
             if c.model and c.model != v.model_name:
                 was = v.running
                 v.stop()
                 v.load_model(c.model)
+                # модель выбрали руками — прежняя жалоба на пропавшую неактуальна
+                v.model_note = ""
                 if was:
                     v.start()
                 # Сразу на диск. Без этого запись шла только по событиям на
@@ -3048,8 +3227,10 @@ if __name__ == "__main__":
         if saved:
             # источник показываем без пароля: окно может быть на виду у цеха
             note = "поднимаю" if cam_v.want_running and not cam_v.is_phone else "ждёт"
-            print(f"  Камера {cam_v.name}: счёт от {saved}, "
+            print(f"  Камера {cam_v.name}: счёт от {saved}, модель {cam_v.model_name}, "
                   f"источник {cam_v.source_safe} — {note}")
+            if cam_v.error:
+                print(f"     ⚠ {cam_v.error}")
 
     # Камеры, помеченные как рабочие, поднимаем ОДИН раз при запуске.
     # Никаких повторов: камера с неверным паролем блокирует вход после пяти
